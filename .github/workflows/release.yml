@@ -1,0 +1,119 @@
+name: Release Plugin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（留空则自动生成日期版本，格式：Y.M.D）'
+        required: false
+        default: ''
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # release 自己仓库 + commit manifest 都用默认 GITHUB_TOKEN
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="$(date +'%Y.%-m.%-d')"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+      - name: Update version in plugin.json / package.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          node -e "
+            const fs = require('fs');
+            for (const f of ['plugin.json', 'package.json']) {
+              const p = JSON.parse(fs.readFileSync(f, 'utf-8'));
+              p.version = '${VERSION}';
+              fs.writeFileSync(f, JSON.stringify(p, null, 2) + '\n');
+            }
+          "
+
+      - name: Build
+        run: npm run build
+
+      - name: Extract plugin info
+        id: plugin_info
+        run: |
+          ENTRY_PATH=$(node -p "require('./plugin.json').entryPath")
+          ZIP_NAME="${ENTRY_PATH}.jsplugin.zip"
+          echo "entryPath=${ENTRY_PATH}" >> $GITHUB_OUTPUT
+          echo "zip_name=${ZIP_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release on this repo
+        id: create_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP_NAME="${{ steps.plugin_info.outputs.zip_name }}"
+          TAG="v${VERSION}"
+
+          # 删除已存在的同名 Release / Tag（重发版兼容）
+          if gh release view "${TAG}" &>/dev/null; then
+            gh release delete "${TAG}" --yes --cleanup-tag
+          fi
+
+          gh release create "${TAG}" \
+            "dist/${ZIP_NAME}" \
+            --title "v${VERSION}" \
+            --notes "自动构建的 JS 插件 v${VERSION}"
+
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${ZIP_NAME}"
+          echo "download_url=${DOWNLOAD_URL}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Commit version bump on current branch
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugin.json package.json
+          git diff --staged --quiet || git commit -m "chore(release): bump to v${VERSION}"
+          git push
+
+      - name: Push manifest.json to main branch (updateUrl target)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          DOWNLOAD_URL="${{ steps.create_release.outputs.download_url }}"
+
+          # plugin.json 的 updateUrl 指向 main 分支的 manifest.json，
+          # 所以无论 workflow 从哪个 branch 跑，manifest.json 必须落到 main。
+          CONTENT=$(jq -nc --arg v "$VERSION" --arg u "$DOWNLOAD_URL" \
+            '{version: $v, download_url: $u}')
+          ENCODED=$(printf '%s' "$CONTENT" | base64 -w 0)
+
+          EXISTING_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/contents/manifest.json?ref=main" --jq '.sha' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING_SHA" ]; then
+            jq -cn --arg msg "chore(release): manifest v${VERSION}" \
+              --arg content "$ENCODED" --arg sha "$EXISTING_SHA" \
+              '{message: $msg, content: $content, sha: $sha, branch: "main"}' | \
+              gh api "repos/${GITHUB_REPOSITORY}/contents/manifest.json" --method PUT --input -
+          else
+            jq -cn --arg msg "chore(release): manifest v${VERSION}" \
+              --arg content "$ENCODED" \
+              '{message: $msg, content: $content, branch: "main"}' | \
+              gh api "repos/${GITHUB_REPOSITORY}/contents/manifest.json" --method PUT --input -
+          fi
