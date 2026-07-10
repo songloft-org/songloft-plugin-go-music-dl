@@ -1,6 +1,6 @@
 {
   "name": "go-music-dl",
-  "version": "2026.7.9",
+  "version": "2026.7.10",
   "description": "通过 go-music-dl 实例聚合搜索各音源，支持试听、歌词与导入本地库",
   "private": true,
   "scripts": {
