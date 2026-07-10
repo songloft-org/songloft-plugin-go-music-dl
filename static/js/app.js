@@ -24,7 +24,18 @@ function sourceLabel(s) {
 let config = {
   baseUrl: 'http://127.0.0.1:58091',
   sources: [...ALL_SOURCES],
+  defaultQuality: 'exhigh', // 默认音质：standard(128) / exhigh(320) / lossless(FLAC) / hires(Hi-Res)，仅网易云生效
 }
+
+// 音质档位（对应网易云 level 取值）。UI 文案与后端 Extra.level 一致。
+const QUALITY_OPTIONS = [
+  { value: 'standard', label: '标准' },
+  { value: 'exhigh', label: '高品质' },
+  { value: 'lossless', label: '无损' },
+  { value: 'hires', label: 'Hi-Res' },
+]
+// 播放时的当前音质（用户可在播放器内临时切换），初始化为默认音质
+let currentQuality = config.defaultQuality || 'exhigh'
 
 // go-music-dl 接口都在 /music 前缀下，根地址自动补上，避免拼出 /search 之类 404
 function normalizeBaseUrl(raw) {
@@ -183,9 +194,18 @@ function getAudio() {
   return document.getElementById('audio')
 }
 
+// 当前生效音质：播放器内临时切换优先，否则用默认音质
+function effectiveQuality() {
+  return currentQuality || config.defaultQuality || 'exhigh'
+}
+
 // 构建试听直链（浏览器内直接播放，走 go-music-dl /music/download?stream=1）
 function buildStreamUrl(s) {
   const base = normalizeBaseUrl(config.baseUrl)
+  // 把音质档位写进 extra.level，后端会透传到 model.Song.Extra，
+  // 网易云据此按指定音质取链（standard/exhigh/lossless/hires）；其他音源忽略该字段。
+  const extra = { ...(s.extra || {}) }
+  if (s.source === 'netease') extra.level = effectiveQuality()
   const p = new URLSearchParams({
     id: s.id,
     source: s.source,
@@ -193,7 +213,7 @@ function buildStreamUrl(s) {
     name: s.name || '',
     artist: s.artist || '',
     album: s.album || '',
-    extra: JSON.stringify(s.extra || {}),
+    extra: JSON.stringify(extra),
   })
   return `${base}/download?${p.toString()}`
 }
@@ -283,8 +303,39 @@ function startAudio(song, retry) {
   audio.src = url
   audio.load()
   updateNowPlaying(song, song.cover || '')
+  refreshQualityControl(song)
   document.getElementById('playerBar').style.display = 'flex'
   audio.play().catch(() => {})
+}
+
+// 根据当前歌曲刷新底部播放条的音质选择器：网易云可切换，其他音源禁用
+function refreshQualityControl(song) {
+  const sel = document.getElementById('pbQualitySelect')
+  if (!sel) return
+  sel.value = effectiveQuality()
+  const netease = !!(song && song.source === 'netease')
+  sel.disabled = !netease
+  sel.title = netease
+    ? '音质（仅网易云可切换）'
+    : '当前音源不支持切换音质（仅网易云支持）'
+}
+
+// 用户切换音质后，重新加载当前歌曲（保留播放进度）。无正在播放的歌曲则忽略。
+function applyQualityChange() {
+  const song = queue[currentIndex]
+  if (!song) return
+  const audio = getAudio()
+  const t = audio.currentTime || 0
+  const wasPlaying = !audio.paused
+  startAudio(song)
+  const onMeta = () => {
+    try { audio.currentTime = t } catch (e) {}
+    if (wasPlaying) audio.play().catch(() => {})
+    audio.removeEventListener('loadedmetadata', onMeta)
+  }
+  audio.addEventListener('loadedmetadata', onMeta)
+  const label = (QUALITY_OPTIONS.find((q) => q.value === currentQuality) || {}).label || currentQuality
+  showSnackbar(`音质已切换为 ${label}`)
 }
 
 function togglePlay() {
@@ -410,6 +461,8 @@ function openFullscreenPlayer() {
   isFpOpen = true
   el.classList.add('open')
   document.body.style.overflow = 'hidden'
+  const cur = queue[currentIndex]
+  if (cur) refreshQualityControl(cur)
   syncProgress()
 }
 
@@ -450,6 +503,9 @@ async function loadConfig() {
     /* 使用默认值 */
   }
   document.getElementById('configBaseUrl').value = config.baseUrl || ''
+  const dq = document.getElementById('configDefaultQuality')
+  if (dq) dq.value = config.defaultQuality || 'exhigh'
+  currentQuality = config.defaultQuality || 'exhigh'
   const box = document.getElementById('configSources')
   box.innerHTML = ''
   for (const s of ALL_SOURCES) {
@@ -477,7 +533,10 @@ async function saveConfig() {
   const sources = Array.from(
     document.querySelectorAll('#configSources input:checked'),
   ).map((cb) => cb.value)
-  config = { ...config, baseUrl, sources }
+  const defaultQuality =
+    document.getElementById('configDefaultQuality').value || 'exhigh'
+  config = { ...config, baseUrl, sources, defaultQuality }
+  currentQuality = defaultQuality
   recommendLoaded = false // 配置变更后，下次进入首页重新拉取推荐
   try {
     await API.saveConfig(config)
@@ -749,25 +808,55 @@ function setCardEnabled(card, enabled) {
   card.classList.toggle('song-dead', !enabled)
 }
 
-// 直接调 go-music-dl 的 /inspect（CORS 已开放 *）：true=可播, false=失效, null=网络/请求错误
+// 直接调 go-music-dl 的 /inspect（CORS 已开放 *）
+// 返回 { valid, bitrate }：valid=true 可播 / false 失效 / null 网络请求错误；bitrate 形如 "320 kbps" 或 "-"
 async function inspectSong(song) {
   const base = normalizeBaseUrl(config.baseUrl)
-  if (!base) return null
+  if (!base) return { valid: null, bitrate: '' }
+  // 与 buildStreamUrl 同款：网易云注入音质档位，使列表显示的 bitrate = 实际播放音质
+  const extra = { ...(song.extra || {}) }
+  if (song.source === 'netease') extra.level = effectiveQuality()
   const p = new URLSearchParams({
     id: song.id,
     source: song.source,
     duration: song.duration || 0,
-    extra: JSON.stringify(song.extra || {}),
+    extra: JSON.stringify(extra),
   })
   try {
     const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
-    if (!res.ok) return false
+    if (!res.ok) return { valid: false, bitrate: '' }
     const j = await res.json()
-    return !!(j && j.valid === true)
+    return { valid: !!(j && j.valid === true), bitrate: (j && j.bitrate) || '' }
   } catch {
-    return null
+    return { valid: null, bitrate: '' }
+  }
+}
+
+// 把 "320 kbps" 归一为简洁徽标文案；无有效值返回空串
+function formatBitrateBadge(bitrate) {
+  if (!bitrate || bitrate === '-') return ''
+  const m = String(bitrate).match(/(\d+)/)
+  if (!m) return ''
+  const kbps = parseInt(m[1], 10)
+  if (!kbps) return ''
+  if (kbps >= 1000) return 'Hi-Res'
+  if (kbps >= 800) return '无损'
+  return `${kbps} kbps`
+}
+
+// 在卡片上显示/更新音质徽标
+function setSongBitrate(card, bitrate) {
+  const el = card.querySelector('.song-bitrate')
+  if (!el) return
+  const text = formatBitrateBadge(bitrate)
+  if (text) {
+    el.textContent = text
+    el.style.display = 'inline-block'
+  } else {
+    el.textContent = ''
+    el.style.display = 'none'
   }
 }
 
@@ -840,11 +929,12 @@ async function switchUntilPlayable(card, song, validByKey) {
     )
     const alt = await switchSource(lastAttempted, { current })
     if (!(alt && typeof alt === 'object')) break // 无更多可播源或网络错误
-    const ok = await inspectSong(alt)
+    const { valid: ok, bitrate } = await inspectSong(alt)
     if (ok === true) {
       applySwitchedSong(card, alt)
       validByKey.set(songKey(song), true)
       setSongStatus(card, 'ok', '已换源 · ' + sourceLabel(alt.source))
+      setSongBitrate(card, bitrate)
       setCardEnabled(card, true)
       return
     }
@@ -873,7 +963,7 @@ async function inspectCard(card, validByKey) {
   if (!d) return
   const song = d.song
   setSongStatus(card, 'checking', '检测中…')
-  const valid = await inspectSong(song)
+  const { valid, bitrate } = await inspectSong(song)
   if (valid === null) {
     setSongStatus(card, 'pending', '检测失败')
     return
@@ -881,6 +971,7 @@ async function inspectCard(card, validByKey) {
   if (valid) {
     validByKey.set(songKey(song), true)
     setSongStatus(card, 'ok', '可播放')
+    setSongBitrate(card, bitrate)
     setCardEnabled(card, true)
     return
   }
@@ -927,7 +1018,10 @@ function renderSong(s, index, opts = {}) {
     <div class="song-meta">
       <div class="song-title">${escapeHtml(s.name)}</div>
       <div class="song-sub">${escapeHtml(s.artist)} · ${escapeHtml(s.album || '')} · ${escapeHtml(sourceLabel(s.source))}</div>
-      <span class="song-status status-pending">待检测</span>
+      <div class="song-tags">
+        <span class="song-status status-pending">待检测</span>
+        <span class="song-bitrate" style="display:none;"></span>
+      </div>
     </div>
     <div class="song-actions">
       ${importBtnHtml}
@@ -1817,11 +1911,16 @@ function initPlayer() {
   })
 
   document.getElementById('pbPlayBtn').onclick = togglePlay
-  document.getElementById('pbStopBtn').onclick = stopPlay
   document.getElementById('fpPlayBtn').onclick = togglePlay
   document.getElementById('fpPrevBtn').onclick = prevSong
   document.getElementById('fpNextBtn').onclick = nextSong
   document.getElementById('fpLyricToggle').onclick = toggleLyricPage
+  // 底部播放条音质切换（仅网易云生效）：切换后重载当前歌曲直链
+  const pbQualitySel = document.getElementById('pbQualitySelect')
+  if (pbQualitySel) pbQualitySel.onchange = () => {
+    currentQuality = pbQualitySel.value
+    applyQualityChange()
+  }
 
   bindSeek('pbTrack')
   bindSeek('fpProgressTrack')
@@ -1866,6 +1965,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('clearAllSourcesBtn').onclick = () => { setAllSources(false); saveConfig() }
   // 单个音源勾选变动也即时保存
   document.getElementById('configSources').addEventListener('change', () => saveConfig())
+  // 默认音质下拉改动即时保存（与其他设置项一致），保存后同步 currentQuality 立即生效
+  const dq = document.getElementById('configDefaultQuality')
+  if (dq) dq.addEventListener('change', () => {
+    config.defaultQuality = dq.value
+    currentQuality = dq.value
+    saveConfig()
+  })
   // 头部「刷新」：在搜索首页刷新推荐，否则执行搜索
   document.getElementById('refreshBtn').onclick = () => {
     const browserTab = document.querySelector('.tab-item[data-tab="browser"]')

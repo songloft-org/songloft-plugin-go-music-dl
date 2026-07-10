@@ -58,7 +58,9 @@
         .song-actions { display: flex; gap: 8px; flex: 0 0 auto; }
         .song-more-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; color: var(--md-on-surface-variant, #666); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
         .song-more-btn:hover { background: rgba(99,102,241,.10); color: var(--md-primary, #5b5fc7); }
-        .song-status { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; }
+        .song-tags { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+        .song-status { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; }
+        .song-bitrate { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; font-weight: 600; background: rgba(99,102,241,.12); color: var(--md-primary, #5b5fc7); }
         .song-status.status-pending { background: rgba(0,0,0,.06); color: #888; }
         .song-status.status-checking { background: rgba(99,102,241,.12); color: #5b5fc7; }
         .song-status.status-ok { background: rgba(76,175,80,.15); color: #2e7d32; }
@@ -118,6 +120,27 @@
         .batch-count { font-size: 13px; color: var(--md-on-surface-variant, #666); }
         .batch-actions { display: flex; gap: 8px; align-items: center; }
         [data-theme="dark"] .batch-bar { background: var(--md-surface, #1b1b1f); }
+        /* 底部迷你播放条音质切换 */
+        .quality-select {
+            flex: 0 0 auto;
+            height: 34px;
+            padding: 0 10px;
+            font-size: 12px;
+            font-weight: 500;
+            line-height: 1;
+            border-radius: 17px;
+            background: var(--md-surface-2, #efeff4);
+            color: var(--md-on-surface, #1f1f1f);
+            border: 1px solid var(--md-outline-variant, #e0e0e0);
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+        .quality-select:focus { outline: 2px solid var(--md-primary, #6750a4); outline-offset: 1px; }
+        .quality-select:disabled { opacity: .45; cursor: default; }
+        @media (max-width: 480px) {
+            .quality-select { height: 30px; padding: 0 6px; font-size: 11px; }
+        }
     </style>
     <script>
       // 主题联动：响应宿主 postMessage('songloft-theme') 与 document 上的 data-theme，
@@ -251,6 +274,16 @@
                         </div>
                         <div class="source-box" id="configSources"></div>
                     </div>
+                    <div class="form-group" style="margin-top:16px;">
+                        <label class="form-label">默认音质</label>
+                        <select class="select-field" id="configDefaultQuality">
+                            <option value="standard">标准 (128 kbps)</option>
+                            <option value="exhigh">高品质 (320 kbps)</option>
+                            <option value="lossless">无损 (FLAC)</option>
+                            <option value="hires">Hi-Res</option>
+                        </select>
+                        <div class="card-desc" style="padding:0;margin-top:4px;">网易云支持无损/Hi-Res（需登录且有相应权限）；未登录或非网易云时按服务默认可用音质播放。</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -327,9 +360,12 @@
             </div>
             <span class="progress-time" id="pbTotal">0:00</span>
         </div>
-        <button class="btn-icon" id="pbStopBtn" title="停止">
-            <span class="material-symbols-outlined">stop_circle</span>
-        </button>
+        <select class="quality-select" id="pbQualitySelect" title="音质（仅网易云可切换）">
+            <option value="standard">标准</option>
+            <option value="exhigh">高品质</option>
+            <option value="lossless">无损</option>
+            <option value="hires">Hi-Res</option>
+        </select>
     </div>
 
     <!-- 全屏播放器 -->
