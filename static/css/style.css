@@ -178,6 +178,15 @@
     padding: 8px 20px 0;
 }
 
+.project-link {
+    display: inline-block;
+    margin: 6px 20px 0;
+    font-size: 13px;
+    color: var(--md-primary);
+    text-decoration: none;
+}
+.project-link:hover { text-decoration: underline; }
+
 /* Buttons */
 .btn-filled, .btn-outlined, .btn-text, .btn-icon {
     font-family: inherit;
@@ -398,6 +407,10 @@
     text-align: center;
     pointer-events: none;
     box-shadow: var(--md-shadow-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
 }
 
 .snackbar.show {
@@ -408,6 +421,25 @@
 .snackbar.success { background: var(--md-success); color: #fff; }
 .snackbar.error { background: var(--md-error); color: #fff; }
 .snackbar.warning { background: var(--md-warning); color: #fff; }
+
+/* 进行中态：文字前的旋转指示 */
+.snackbar-spinner {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(128, 128, 128, .35);
+    border-top-color: var(--md-primary, #5b5fc7);
+    border-radius: 50%;
+    animation: snackbar-spin .7s linear infinite;
+}
+.snackbar.success .snackbar-spinner,
+.snackbar.error .snackbar-spinner {
+    border-color: rgba(255, 255, 255, .4);
+    border-top-color: #fff;
+}
+@keyframes snackbar-spin {
+    to { transform: rotate(360deg); }
+}
 
 /* Dialog */
 .dialog-overlay {

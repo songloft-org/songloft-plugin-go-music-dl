@@ -103,13 +103,39 @@ const Host = {
 // 搜索类型：单曲 / 歌单 / 专辑（整合在搜索框的分段切换里）
 let currentSearchType = 'song'
 
-function showSnackbar(msg) {
+let snackbarTimer = null
+// showSnackbar(msg, sticky, type)
+//  - sticky=true：不自动消失，用于「导入中/换源中」等进行态，并在文字前显示旋转指示
+//  - type：'success' | 'error' | 'warning'，用于配色（不传则默认中性色）
+function showSnackbar(msg, sticky, type) {
   const el = document.getElementById('snackbar')
-  el.textContent = msg
-  el.className = 'snackbar show'
-  setTimeout(() => {
-    el.className = 'snackbar'
-  }, 2500)
+  if (!el) return
+  // 未显式指定 type 且非进行态时，按消息语义自动推断配色
+  if (!type && !sticky) {
+    if (/失败|错误|无法|出错|失效/.test(msg)) type = 'error'
+    else if (/已导入|已保存|已在|已添加|成功/.test(msg)) type = 'success'
+  }
+  const cls = ['snackbar', 'show']
+  if (type) cls.push(type)
+  el.className = cls.join(' ')
+  if (sticky) {
+    // 进行态：spinner + 文本（文本用 textContent 防注入）
+    el.innerHTML = '<span class="snackbar-spinner" aria-hidden="true"></span><span class="snackbar-text"></span>'
+    el.querySelector('.snackbar-text').textContent = msg
+  } else {
+    el.textContent = msg
+  }
+  if (snackbarTimer) clearTimeout(snackbarTimer)
+  if (!sticky) {
+    snackbarTimer = setTimeout(() => {
+      el.className = 'snackbar'
+    }, 2500)
+  }
+}
+function hideSnackbar() {
+  if (snackbarTimer) clearTimeout(snackbarTimer)
+  const el = document.getElementById('snackbar')
+  if (el) el.className = 'snackbar'
 }
 
 function escapeHtml(s) {
@@ -456,9 +482,104 @@ async function saveConfig() {
   try {
     await API.saveConfig(config)
     showSnackbar('配置已保存')
+    testConnection()
   } catch (e) {
-    showSnackbar('保存失败: ' + e.message)
+    showSnackbar(friendlyError(e, '保存失败'))
   }
+}
+
+// go-music-dl 是跨域 HTTP 服务；WebView 默认可能附带凭据发起跨域请求，
+// 而服务端同时返回 `Access-Control-Allow-Origin: *` 与 `Allow-Credentials: true`，
+// 浏览器对「凭据请求 + *」组合会直接拒绝 CORS。显式 credentials:'omit' 让请求变为
+// 非凭据，使 * 生效，规避「due to access control checks」报错。
+function gmdFetch(url, opts = {}) {
+  return fetch(url, { credentials: 'omit', ...opts })
+}
+
+// 判断 fetch 失败是否为网络层错误（地址错误/服务未启动/CORS 等），便于给出友好提示
+function isNetworkError(e) {
+  return !!e && (e.name === 'TypeError' || /failed to fetch|network request failed/i.test(e.message || ''))
+}
+
+// 失败原因分类：网络 / 鉴权 / 音源失效 / 未知
+const ERR_NETWORK = 'network'
+const ERR_AUTH = 'auth'
+const ERR_SOURCE = 'source'
+const ERR_UNKNOWN = 'unknown'
+
+// 把异常归为四类之一，并返回原始 detail（后端真实错误信息），供上层拼装友好文案
+function classifyError(e) {
+  const msg = e && e.message ? String(e.message) : ''
+  const name = (e && e.name) || ''
+  // 1) 鉴权失效：401 未授权 / 登录态过期 / cookie 失效
+  if (/401|未授权|未登录|登录失效|鉴权|token|cookie/i.test(msg) || name === 'AuthError') {
+    return { category: ERR_AUTH, detail: msg }
+  }
+  // 2) 音源失效：后端明确告知音源不可用 / 已下架
+  if (/音源已失效|资源已失效|链接失效|已下架|无可用音源|版权/i.test(msg)) {
+    return { category: ERR_SOURCE, detail: msg }
+  }
+  // 3) 网络层：fetch 抛 TypeError（CORS/地址错/服务未启）、超时/Abort
+  if (isNetworkError(e) || name === 'AbortError' || /timeout|超时|aborted/i.test(msg)) {
+    return { category: ERR_NETWORK, detail: msg }
+  }
+  return { category: ERR_UNKNOWN, detail: msg }
+}
+
+// 把错误转成「带分类 + 修复建议」的友好文案，统一失败提示口径
+function friendlyError(e, fallback) {
+  const { category, detail } = classifyError(e)
+  const tail = detail ? `（${detail}）` : ''
+  switch (category) {
+    case ERR_NETWORK:
+      return `网络异常，无法连接服务${tail}请检查服务地址是否正确、go-music-dl 是否已启动`
+    case ERR_AUTH:
+      return `鉴权失效${tail}请刷新插件页面后重试`
+    case ERR_SOURCE:
+      return `音源失效，该音源已不可用${tail}已自动尝试换源`
+    default:
+      return (fallback || '操作失败') + tail
+  }
+}
+
+// 轻量探测服务是否可达：GET 带结尾斜杠的 /music/ 地址，避免裸 /music 触发 301
+// 重定向（重定向响应无 CORS 头会被浏览器拦截）；带 4s 超时。
+async function probeService(base) {
+  const norm = normalizeBaseUrl(base)
+  if (!norm) return { ok: false }
+  try {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => ctrl.abort(), 4000)
+    const res = await gmdFetch(norm + '/', {
+      method: 'GET',
+      signal: ctrl.signal,
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    clearTimeout(timer)
+    return { ok: true, status: res.status }
+  } catch (e) {
+    return { ok: false }
+  }
+}
+
+function setConnStatus(text, kind) {
+  const el = document.getElementById('connStatus')
+  if (!el) return
+  el.textContent = text
+  el.className = 'conn-status ' + (kind || '')
+}
+
+// 设置页「测试连接」：探测服务可达性并显示状态
+async function testConnection() {
+  const base = (config.baseUrl || '').trim()
+  if (!base) {
+    setConnStatus('请先填写服务地址', 'err')
+    return
+  }
+  setConnStatus('正在连接…', 'pending')
+  const r = await probeService(base)
+  if (r.ok) setConnStatus('连接成功 ✓', 'ok')
+  else setConnStatus('无法连接，请检查地址或服务是否启动', 'err')
 }
 
 async function doSearch() {
@@ -489,7 +610,7 @@ async function doSearch() {
       list.appendChild(grid)
     }
   } catch (e) {
-    list.innerHTML = `<div class="empty-state">搜索失败: ${escapeHtml(e.message)}</div>`
+    list.innerHTML = `<div class="empty-state">搜索失败：${escapeHtml(friendlyError(e, '搜索失败'))}</div>`
   }
 }
 
@@ -512,7 +633,7 @@ async function loadRecommend() {
   try {
     const sources = (config.sources && config.sources.length) ? config.sources : ALL_SOURCES
     const url = `${base}/recommend?sources=${sources.map(encodeURIComponent).join('&sources=')}`
-    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (!res.ok) {
       listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
       return
@@ -529,7 +650,11 @@ async function loadRecommend() {
     renderRecommendByCat()
     recommendLoaded = true
   } catch (e) {
-    listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
+    if (isNetworkError(e)) {
+      listEl.innerHTML = '<div class="empty-state">无法连接到服务地址，请检查 go-music-dl 服务是否启动、地址是否正确，或在「插件设置」中点击「测试连接」。</div>'
+    } else {
+      listEl.innerHTML = `<div class="empty-state">推荐加载失败：${escapeHtml(friendlyError(e, '加载失败'))}</div>`
+    }
   }
 }
 
@@ -593,6 +718,16 @@ function showBrowserHome() {
   if (!recommendLoaded) loadRecommend()
 }
 
+// 搜索结果页「返回首页」：收起结果列表、清空关键词，回到每日推荐视图（无需刷新整页）
+function backToBrowserHome() {
+  if (selectMode) setSelectMode(false) // 退出多选，避免批量操作栏残留
+  const input = document.getElementById('searchInput')
+  if (input) input.value = ''
+  document.getElementById('listCard').style.display = 'none'
+  document.getElementById('recommendCard').style.display = 'block'
+  if (!recommendLoaded) loadRecommend()
+}
+
 // 卡片与歌曲数据的绑定（避免挂在 DOM 上导致类型/序列化问题）
 const cardData = new WeakMap()
 
@@ -625,7 +760,7 @@ async function inspectSong(song) {
     extra: JSON.stringify(song.extra || {}),
   })
   try {
-    const res = await fetch(`${base}/inspect?${p.toString()}`, {
+    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
     if (!res.ok) return false
@@ -652,7 +787,7 @@ async function switchSource(song, opts = {}) {
   })
   if (opts.target) p.set('target', opts.target)
   try {
-    const res = await fetch(`${base}/switch_source?${p.toString()}`, {
+    const res = await gmdFetch(`${base}/switch_source?${p.toString()}`, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
     if (res.status === 404) return false
@@ -769,11 +904,16 @@ function scheduleInspect(list) {
 }
 
 function renderSong(s, index, opts = {}) {
-  const showImport = opts.showImport !== false
+  const showImport = opts.showImport !== false && !selectMode
   const card = document.createElement('div')
   card.className = 'song-row'
   cardData.set(card, { song: s, index })
   const cover = s.cover || FALLBACK_COVER
+  const key = songKey(s)
+  const sel = selectMode && selectedSongs.has(key)
+  const checkHtml = selectMode
+    ? `<div class="song-check" data-act="check"><span class="song-check-box${sel ? ' checked' : ''}">${sel ? '✓' : ''}</span></div>`
+    : ''
   const importBtnHtml = showImport
     ? `<button class="song-more-btn" data-act="dl" title="导入" aria-label="导入">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
@@ -782,6 +922,7 @@ function renderSong(s, index, opts = {}) {
       </button>`
     : ''
   card.innerHTML = `
+    ${checkHtml}
     <img src="${cover}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
     <div class="song-meta">
       <div class="song-title">${escapeHtml(s.name)}</div>
@@ -791,6 +932,14 @@ function renderSong(s, index, opts = {}) {
     <div class="song-actions">
       ${importBtnHtml}
     </div>`
+  if (selectMode) card.classList.toggle('selected', sel)
+  const checkEl = card.querySelector('[data-act="check"]')
+  if (checkEl)
+    checkEl.onclick = (e) => {
+      e.stopPropagation()
+      e.preventDefault()
+      toggleSelect(s, card)
+    }
   const dlBtn = card.querySelector('[data-act="dl"]')
   if (dlBtn)
     dlBtn.onclick = (e) => {
@@ -799,8 +948,12 @@ function renderSong(s, index, opts = {}) {
       const d = cardData.get(card)
       if (d) openImportPanel(d.song, dlBtn)
     }
-  // 点击整行：直接播放（迷你播放条常驻底部；点播放条本身可展开全屏播放器）
+  // 点击整行：多选模式下切换勾选；否则直接播放
   card.onclick = () => {
+    if (selectMode) {
+      toggleSelect(s, card)
+      return
+    }
     const d = cardData.get(card)
     if (d) playSong(d.song, d.index)
   }
@@ -814,19 +967,203 @@ let newPlaylistCallback = null
 // 歌单列表（模块级缓存，建歌单后本地 push 即时显示，无需等重新拉取）
 let importPlaylists = []
 
+// ---------- 多选 / 批量导入 ----------
+let selectMode = false
+// 已选歌曲：key(source_id) -> song 对象，避免同歌重复勾选
+let selectedSongs = new Map()
+// 批量导入进行中：打开导入面板后，选歌单/新建歌单都按整批处理
+let batchImport = false
+let batchList = []
+
+function songKey(s) {
+  return `${s.source || ''}__${(s.id != null ? s.id : '')}`
+}
+
+function toggleSelect(s, card) {
+  const key = songKey(s)
+  if (selectedSongs.has(key)) selectedSongs.delete(key)
+  else selectedSongs.set(key, s)
+  const on = selectedSongs.has(key)
+  if (card) {
+    card.classList.toggle('selected', on)
+    const box = card.querySelector('.song-check-box')
+    if (box) {
+      box.classList.toggle('checked', on)
+      box.textContent = on ? '✓' : ''
+    }
+  }
+  updateBatchBar()
+}
+
+function updateBatchBar() {
+  const bar = document.getElementById('batchBar')
+  if (!bar) return
+  const n = selectedSongs.size
+  bar.style.display = n > 0 ? 'flex' : 'none'
+  const countEl = document.getElementById('batchCount')
+  if (countEl) countEl.textContent = `已选 ${n} 首`
+}
+
+function setSelectMode(on) {
+  selectMode = on
+  const btn = document.getElementById('batchToggleBtn')
+  if (btn) {
+    btn.textContent = on ? '完成' : '多选'
+    btn.classList.toggle('active', on)
+  }
+  if (!on) {
+    selectedSongs.clear()
+    batchImport = false
+    batchList = []
+    updateBatchBar()
+  }
+  // 重新渲染当前搜索结果，切换勾选框显隐（仅单曲结果需要，歌单/专辑不涉及）
+  if (currentSearchType === 'song') {
+    const list = document.getElementById('browserList')
+    if (list && queue.length) {
+      list.innerHTML = ''
+      queue.forEach((s, i) => list.appendChild(renderSong(s, i)))
+      scheduleInspect(list)
+    }
+  }
+}
+
+function exitBatchMode() {
+  selectedSongs.clear()
+  batchImport = false
+  batchList = []
+  updateBatchBar()
+}
+
+function openImportPanelForBatch() {
+  if (!selectedSongs.size) return
+  batchImport = true
+  batchList = [...selectedSongs.values()]
+  const panel = document.getElementById('importPlaylistPanel')
+  if (!panel) return
+  panel.classList.remove('in')
+  panel.classList.add('show')
+  loadImportPlaylists()
+  panel.style.top = '50%'
+  panel.style.left = '50%'
+  panel.style.transform = 'translate(-50%, -50%)'
+  // 居中弹出：.in 提供淡入（transform 由内联居中控制）
+  requestAnimationFrame(() => panel.classList.add('in'))
+  setTimeout(() => {
+    document.addEventListener('click', onImportPanelOutside, true)
+    document.addEventListener('keydown', onImportPanelEsc, true)
+  }, 0)
+}
+
+// 把一批歌曲依次导入曲库，返回统计；带逐条进度提示
+async function batchImportToLibrary() {
+  if (!beginImport()) return
+  const songs = [...batchList]
+  try {
+    closeImportPanel()
+    let ok = 0
+    let already = 0
+    let failed = 0
+    const failCats = {} // 统计失败类别，用于汇总时给出原因
+    for (let i = 0; i < songs.length; i++) {
+      showSnackbar(`正在导入到曲库 ${i + 1}/${songs.length}…`, true)
+      try {
+        const r = await importSongToLibrary(songs[i])
+        if (r && r.success) {
+          if (r.already_local) already++
+          else ok++
+        } else failed++
+      } catch (e) {
+        failed++
+        failCats[classifyError(e).category] =
+          (failCats[classifyError(e).category] || 0) + 1
+      }
+    }
+    let msg = `已导入 ${ok} 首到曲库`
+    if (already) msg += `，${already} 首已在曲库`
+    if (failed) msg += `，${failed} 首失败` + batchFailHint(failCats, failed)
+    showSnackbar(msg)
+    exitBatchMode()
+  } finally {
+    endImport()
+  }
+}
+
+// 把一批歌曲依次导入指定歌单，返回统计
+async function addSongsBatchToPlaylist(playlistId, songs) {
+  let ok = 0
+  let skipped = 0
+  let failed = 0
+  const failCats = {}
+  for (let i = 0; i < songs.length; i++) {
+    showSnackbar(`正在导入到歌单 ${i + 1}/${songs.length}…`, true)
+    try {
+      const r = await importSongToLibrary(songs[i])
+      if (r && r.song && r.song.id) {
+        const res = await Host.playlists.addSongs(playlistId, [r.song.id])
+        if (res && res.skipped > 0 && !res.added) skipped++
+        else ok++
+      } else failed++
+    } catch (e) {
+      failed++
+      failCats[classifyError(e).category] =
+        (failCats[classifyError(e).category] || 0) + 1
+    }
+  }
+  return { ok, skipped, failed, failHint: batchFailHint(failCats, failed) }
+}
+
+// 根据失败类别统计生成汇总提示后缀：单一原因时给明确原因，混合时给概览
+function batchFailHint(failCats, failed) {
+  if (!failed) return ''
+  const cats = Object.keys(failCats)
+  if (cats.length === 1) {
+    const c = cats[0]
+    if (c === ERR_NETWORK) return '（多为网络异常，请检查服务是否启动）'
+    if (c === ERR_AUTH) return '（鉴权失效，请刷新插件页面后重试）'
+    if (c === ERR_SOURCE) return '（多为音源失效，已尝试自动换源）'
+    return '（多为操作失败）'
+  }
+  return '（多为音源失效或网络异常）'
+}
+
+async function batchImportToPlaylist(playlistId) {
+  if (!beginImport()) return
+  const songs = [...batchList]
+  try {
+    closeImportPanel()
+    const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(playlistId, songs)
+    let msg = `已导入 ${ok} 首到歌单`
+    if (skipped) msg += `，${skipped} 首已在歌单中`
+    if (failed) msg += `，${failed} 首失败` + (failHint || '')
+    showSnackbar(msg)
+    exitBatchMode()
+  } finally {
+    endImport()
+  }
+}
+
 function openImportPanel(song, anchor) {
   pendingImportItem = song
+  // 单首导入：退出批量模式
+  batchImport = false
+  batchList = []
   const panel = document.getElementById('importPlaylistPanel')
   if (!panel) return
   // 即时显示面板（内部先展示「加载中…」），不再等网络、不再盖全屏遮罩
+  panel.classList.remove('in')
   panel.classList.add('show')
   loadImportPlaylists()
+  // 下一帧加 .in 触发滑入过渡（从 display:none 直接改样式不会触发 transition）
+  requestAnimationFrame(() => panel.classList.add('in'))
 
   // 贴着三点按钮定位（对齐主程序 PopupMenuButton 的原地下拉范式）
   // 先显示再测量，避免尺寸为 0
   const pr = panel.getBoundingClientRect()
   const ar = anchor ? anchor.getBoundingClientRect() : null
   if (ar) {
+    // 清除可能残留的居中内联 transform，让 CSS 的滑入动画（translateY/scale）生效
+    panel.style.transform = ''
     const margin = 8
     let top = ar.bottom + 4
     if (top + pr.height > window.innerHeight - margin) {
@@ -865,7 +1202,14 @@ function onImportPanelEsc(e) {
 
 function closeImportPanel() {
   const panel = document.getElementById('importPlaylistPanel')
-  if (panel) panel.classList.remove('show')
+  if (panel) {
+    // 先移除 .in 播放淡出/上收动画，动画结束后再移除 .show 真正隐藏
+    panel.classList.remove('in')
+    setTimeout(() => {
+      // 若期间未重新打开（未再次加 in）才隐藏，避免竞态误关
+      if (!panel.classList.contains('in')) panel.classList.remove('show')
+    }, 180)
+  }
   document.removeEventListener('click', onImportPanelOutside, true)
   document.removeEventListener('keydown', onImportPanelEsc, true)
 }
@@ -880,7 +1224,7 @@ async function loadImportPlaylists() {
       Array.isArray(result) ? result : (result && result.playlists) || []
     renderImportPlaylistList()
   } catch (e) {
-    if (listEl) listEl.innerHTML = '<div class="empty-state">歌单加载失败</div>'
+    if (listEl) listEl.innerHTML = `<div class="empty-state">歌单加载失败：${escapeHtml(friendlyError(e, '加载失败'))}</div>`
   }
 }
 
@@ -906,79 +1250,173 @@ function renderImportPlaylistList() {
   })
 }
 
-// 先 import 进曲库拿 song.id，再按需加入歌单
+// 先把单首歌曲 import 进曲库拿 song.id（含音源失效自动换源重试）。
+// 抽出为独立函数，供单首导入与批量导入复用。
+async function importSongToLibrary(song) {
+  let s = song
+  let lastErr = null
+  for (let round = 0; round <= MAX_SWITCH_ROUNDS; round++) {
+    try {
+      return await API.import({
+        id: s.id, name: s.name, artist: s.artist, album: s.album,
+        cover: s.cover, source: s.source, duration: s.duration, extra: s.extra,
+      })
+    } catch (e) {
+      const msg = e && e.message ? e.message : ''
+      if (msg.indexOf('音源已失效') >= 0 && round < MAX_SWITCH_ROUNDS) {
+        const alt = await switchSource(s, { current: s.source })
+        if (alt && typeof alt === 'object' && alt.id) {
+          s = alt
+          // 同步到 pendingImportItem，使后续「加歌到歌单」拿到换源后的 song.id
+          if (pendingImportItem && pendingImportItem === song) pendingImportItem = alt
+          // 进行态：带旋转指示，明确告知正在换源
+          showSnackbar('音源已失效，正在换源重试…', true)
+          continue
+        }
+      }
+      lastErr = e
+      break
+    }
+  }
+  throw lastErr || new Error('导入失败')
+}
+
+// 单首导入：复用 importSongToLibrary
 async function doImportToLibrary() {
-  const s = pendingImportItem
-  const r = await API.import({
-    id: s.id, name: s.name, artist: s.artist, album: s.album,
-    cover: s.cover, source: s.source, duration: s.duration, extra: s.extra,
-  })
-  return r
+  return importSongToLibrary(pendingImportItem)
+}
+
+// 导入进行中锁：防止重复点击导致并发导入
+let isImporting = false
+function beginImport() {
+  if (isImporting) {
+    showSnackbar('正在导入中，请稍候…')
+    return false
+  }
+  isImporting = true
+  return true
+}
+function endImport() {
+  isImporting = false
 }
 
 async function importToLibrary() {
+  // 批量模式：整批导入到曲库
+  if (batchImport && batchList.length) {
+    await batchImportToLibrary()
+    return
+  }
   if (!pendingImportItem) return
-  closeImportPanel()
+  if (!beginImport()) return
   try {
-    showSnackbar('正在导入到曲库...')
+    closeImportPanel()
+    showSnackbar('正在导入到曲库…', true)
     const r = await doImportToLibrary()
     if (r && r.success) showSnackbar(r.already_local ? '已在曲库中' : '已导入到曲库')
     else showSnackbar('导入失败')
   } catch (e) {
-    const msg = e && e.message ? e.message : ''
-    if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
-    else showSnackbar('导入失败: ' + msg)
+    showSnackbar(friendlyError(e, '导入失败'))
+  } finally {
+    endImport()
   }
 }
 
 async function importToPlaylist(playlistId) {
+  // 批量模式：整批导入到指定歌单
+  if (batchImport && batchList.length) {
+    await batchImportToPlaylist(playlistId)
+    return
+  }
   if (!pendingImportItem) return
-  closeImportPanel()
+  if (!beginImport()) return
   try {
-    showSnackbar('正在导入到曲库...')
+    closeImportPanel()
+    showSnackbar('正在导入到曲库…', true)
     const r = await doImportToLibrary()
     if (!r || !r.success || !r.song) {
       showSnackbar('导入失败')
       return
     }
-    await Host.playlists.addSongs(playlistId, [r.song.id])
-    showSnackbar('已导入到歌单')
+    // addSongs 返回 { added, skipped }：skipped>0 表示歌曲已在该歌单中（被去重跳过）
+    const res = await Host.playlists.addSongs(playlistId, [r.song.id])
+    const added = (res && res.added) || 0
+    const skipped = (res && res.skipped) || 0
+    if (added === 0 && skipped > 0) showSnackbar('该歌曲已在歌单中')
+    else if (added > 0 && r.already_local) showSnackbar('已在曲库，已导入到歌单')
+    else showSnackbar('已导入到歌单')
   } catch (e) {
-    const msg = e && e.message ? e.message : ''
-    if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
-    else showSnackbar('导入失败: ' + msg)
+    showSnackbar(friendlyError(e, '导入失败'))
+  } finally {
+    endImport()
   }
 }
 
 function createNewPlaylist() {
-  if (!pendingImportItem) return
+  // 批量模式下无需 pendingImportItem
+  if (!batchImport && !pendingImportItem) return
   closeImportPanel()
   const dialog = document.getElementById('newPlaylistDialog')
   const backdrop = document.getElementById('newPlaylistBackdrop')
   const input = document.getElementById('newPlaylistName')
   if (!dialog || !backdrop) return
   newPlaylistCallback = async (name) => {
+    if (!beginImport()) return
     try {
       const playlist = await Host.playlists.create({ name: name, type: 'normal' })
       if (!playlist || !playlist.id) {
         showSnackbar('创建歌单失败')
         return
       }
-      showSnackbar('正在导入到曲库...')
+      // 批量模式：把整批歌曲导入新建歌单
+      if (batchImport && batchList.length) {
+        showSnackbar('正在导入到曲库…', true)
+        const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(
+          playlist.id,
+          [...batchList],
+        )
+        const existed = importPlaylists.some(
+          (p) => p && String(p.id) === String(playlist.id),
+        )
+        if (!existed) importPlaylists.push(playlist)
+        renderImportPlaylistList()
+        let msg = existed ? '同名歌单已存在' : '已导入到新歌单'
+        if (ok) msg += `（${ok} 首）`
+        if (skipped) msg += `，${skipped} 首已在歌单中`
+        if (failed) msg += `，${failed} 首失败` + (failHint || '')
+        showSnackbar(msg)
+        exitBatchMode()
+        return
+      }
+      // 单首模式
+      showSnackbar('正在导入到曲库…', true)
       const r = await doImportToLibrary()
       if (!r || !r.success || !r.song) {
         showSnackbar('导入失败')
         return
       }
-      await Host.playlists.addSongs(playlist.id, [r.song.id])
-      // 本地即时更新列表，避免重新拉取（宿主列表有缓存/一致性延迟时看不到新建项）
-      importPlaylists.push(playlist)
+      // addSongs 返回 { added, skipped }：skipped>0 表示该歌曲早已在此歌单中
+      const res = await Host.playlists.addSongs(playlist.id, [r.song.id])
+      const added = (res && res.added) || 0
+      const skipped = (res && res.skipped) || 0
+      // 本地即时更新列表，避免重新拉取（宿主列表有缓存/一致性延迟时看不到新建项）。
+      // 注意：主程序对同名歌单是幂等的——重名时会返回已存在的歌单（同一 id）而非新建，
+      // 故这里必须按 id 去重，否则同一歌单会被重复 push，导致列表出现「重名两条」。
+      const existed = importPlaylists.some(
+        (p) => p && String(p.id) === String(playlist.id),
+      )
+      if (!existed) importPlaylists.push(playlist)
       renderImportPlaylistList()
-      showSnackbar('已导入到新歌单')
+      if (added === 0 && skipped > 0) {
+        showSnackbar(existed ? '同名歌单已存在，且歌曲已在歌单中' : '该歌曲已在歌单中')
+      } else if (existed) {
+        showSnackbar('同名歌单已存在，已导入到该歌单')
+      } else {
+        showSnackbar('已导入到新歌单')
+      }
     } catch (e) {
-      const msg = e && e.message ? e.message : ''
-      if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
-      else showSnackbar('导入失败: ' + msg)
+      showSnackbar(friendlyError(e, '导入失败'))
+    } finally {
+      endImport()
     }
   }
   if (input) input.value = ''
@@ -1205,7 +1643,7 @@ async function loadUserPlaylists() {
   try {
     const sources = (config.sources && config.sources.length) ? config.sources : ALL_SOURCES
     const url = `${base}/user_playlists?sources=${sources.map(encodeURIComponent).join('&sources=')}`
-    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (res.status === 401) {
       listEl.innerHTML = '<div class="empty-state">go-music-dl 启用了登录鉴权，请改用无需鉴权的地址</div>'
       return
@@ -1236,7 +1674,11 @@ async function loadUserPlaylists() {
     renderPlaylistsByCat()
     myListLoaded = true
   } catch (e) {
-    listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
+    if (isNetworkError(e)) {
+      listEl.innerHTML = '<div class="empty-state">无法连接到服务地址，请检查 go-music-dl 服务是否启动、地址是否正确，或在「插件设置」中点击「测试连接」。</div>'
+    } else {
+      listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
+    }
   }
 }
 
@@ -1263,7 +1705,7 @@ async function openCollection(pl, endpoint, showImport) {
   }
   try {
     const url = `${base}/${endpoint}?id=${encodeURIComponent(pl.id)}&source=${encodeURIComponent(pl.source)}`
-    const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (!res.ok) {
       listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
       return
@@ -1301,6 +1743,11 @@ function backToPlaylists() {
 function initTabs() {
   document.querySelectorAll('.tab-item').forEach((tab) => {
     tab.onclick = () => {
+      // 切换 tab 时收起歌单详情全屏浮层，并把歌单列表视图恢复可见。
+      // 否则若此前从「搜索」页进入详情（songsBackToMyList=false），backToPlaylists 不会恢复
+      // myPlaylistView，回到「我的歌单」时列表视图仍为 display:none → 整页白屏（只能刷新）。
+      document.getElementById('mySongsView').style.display = 'none'
+      document.getElementById('myPlaylistView').style.display = 'block'
       document
         .querySelectorAll('.tab-item')
         .forEach((t) => t.classList.remove('active'))
@@ -1320,6 +1767,9 @@ function initTabs() {
 function initPlayer() {
   const audio = getAudio()
   audio.addEventListener('loadedmetadata', () => {
+    // 加载成功：若此前显示「重试/换源中」的进行态提示（含 spinner），清除它
+    const sb = document.getElementById('snackbar')
+    if (sb && sb.querySelector('.snackbar-spinner')) hideSnackbar()
     audioRetry = 0
     syncProgress()
   })
@@ -1333,7 +1783,7 @@ function initPlayer() {
     // 先原样重试（处理偶发网络抖动）
     if (audioRetry < MAX_AUDIO_RETRY) {
       audioRetry++
-      showSnackbar(`加载失败，正在重试 (${audioRetry}/${MAX_AUDIO_RETRY})…`)
+      showSnackbar(`加载失败，正在重试 (${audioRetry}/${MAX_AUDIO_RETRY})…`, true)
       setTimeout(() => startAudio(song, audioRetry), 700 * audioRetry)
       return
     }
@@ -1343,6 +1793,7 @@ function initPlayer() {
       audioSwitchRetry++
       showSnackbar(
         `当前音源不可播放，正在自动换源 (${audioSwitchRetry}/${MAX_AUDIO_SWITCH})…`,
+        true,
       )
       try {
         const alt = await switchSource(song, { current: song.source })
@@ -1409,6 +1860,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   })
   document.getElementById('saveConfigBtn').onclick = saveConfig
+  document.getElementById('testConnBtn').onclick = testConnection
   // 全选 / 清空：切换勾选后立即保存，免去再点「保存配置」
   document.getElementById('selectAllSourcesBtn').onclick = () => { setAllSources(true); saveConfig() }
   document.getElementById('clearAllSourcesBtn').onclick = () => { setAllSources(false); saveConfig() }
@@ -1431,6 +1883,25 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('refreshMyListBtn').onclick = loadUserPlaylists
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
+  // 搜索结果页「返回首页」：回到每日推荐，无需刷新整页
+  document.getElementById('backToHomeBtn').onclick = backToBrowserHome
   const confirmNewPlaylistBtn = document.getElementById('confirmNewPlaylist')
   if (confirmNewPlaylistBtn) confirmNewPlaylistBtn.onclick = confirmNewPlaylist
+  // 批量多选：切换多选模式 + 底部批量操作栏
+  const batchToggleBtn = document.getElementById('batchToggleBtn')
+  if (batchToggleBtn) batchToggleBtn.onclick = () => setSelectMode(!selectMode)
+  const batchToLibraryBtn = document.getElementById('batchToLibraryBtn')
+  if (batchToLibraryBtn) batchToLibraryBtn.onclick = () => {
+    if (!selectedSongs.size) return
+    batchImport = true
+    batchList = [...selectedSongs.values()]
+    importToLibrary()
+  }
+  const batchToPlaylistBtn = document.getElementById('batchToPlaylistBtn')
+  if (batchToPlaylistBtn) batchToPlaylistBtn.onclick = () => openImportPanelForBatch()
+  const batchClearBtn = document.getElementById('batchClearBtn')
+  if (batchClearBtn) batchClearBtn.onclick = () => {
+    selectedSongs.clear()
+    updateBatchBar()
+  }
 })

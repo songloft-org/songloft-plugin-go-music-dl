@@ -8,6 +8,48 @@
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
     <link rel="stylesheet" href="static/css/style.css">
     <style>
+        /* 主题变量（自包含，对齐主程序 Material 配色）：
+           宿主 common.css 可能未在本 WebView 注入，这里兜底定义；
+           同时响应宿主 postMessage('songloft-theme') 与 data-theme，实现深浅色同步。 */
+        :root {
+            --md-primary: #5b5fc7;
+            --md-on-primary: #ffffff;
+            --md-primary-container: #e0e0fb;
+            --md-on-primary-container: #1a1b3d;
+            --md-surface: #ffffff;
+            --md-surface-1: #f7f7fb;
+            --md-surface-2: #efeff4;
+            --md-surface-variant: #e7e7ee;
+            --md-on-surface: #1f1f1f;
+            --md-on-surface-variant: #666666;
+            --md-outline: #c9c9d4;
+            --md-outline-variant: #e0e0e0;
+            --md-error: #b3261e;
+            --md-shadow-1: 0 1px 3px rgba(0,0,0,.12);
+            --md-shadow-2: 0 4px 12px rgba(0,0,0,.18);
+            --md-radius-sm: 8px;
+            --md-radius-md: 12px;
+            --md-radius-xl: 999px;
+            --md-radius-full: 999px;
+        }
+        [data-theme="dark"] {
+            --md-primary: #c3c4ff;
+            --md-on-primary: #2a2a55;
+            --md-primary-container: #3a3a6a;
+            --md-on-primary-container: #e3e3ff;
+            --md-surface: #1b1b1f;
+            --md-surface-1: #232327;
+            --md-surface-2: #2b2b30;
+            --md-surface-variant: #2e2e34;
+            --md-on-surface: #e6e6e6;
+            --md-on-surface-variant: #a8a8b3;
+            --md-outline: #4a4a55;
+            --md-outline-variant: #35353c;
+            --md-error: #f2b8b5;
+            --md-shadow-1: 0 1px 3px rgba(0,0,0,.5);
+            --md-shadow-2: 0 4px 12px rgba(0,0,0,.55);
+        }
+        html, body { background: var(--md-surface-1); color: var(--md-on-surface); }
         .song-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--md-outline-variant, #e0e0e0); }
         .song-cover { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: 0 0 auto; }
         .song-meta { flex: 1; min-width: 0; }
@@ -45,8 +87,9 @@
         .import-panel, .dialog-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 201; width: min(360px, 88vw); max-height: 78vh; display: none; flex-direction: column; background: var(--md-surface, #fff); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.25); overflow: hidden; }
         .import-panel.show, .dialog-panel.show { display: flex; }
         /* 导入下拉菜单：贴着三点按钮弹出，无全屏遮罩 */
-        .import-dropdown { top: auto; left: auto; transform: none; width: min(280px, 72vw); max-height: 60vh; border-radius: 14px; box-shadow: 0 10px 28px rgba(0,0,0,.18); opacity: 0; transition: opacity .12s ease; }
-        .import-dropdown.show { opacity: 1; }
+        .import-dropdown { top: auto; left: auto; width: min(280px, 72vw); max-height: 60vh; border-radius: 14px; box-shadow: 0 10px 28px rgba(0,0,0,.18); opacity: 0; transform: translateY(-8px) scale(.98); transform-origin: top right; transition: opacity .16s ease, transform .18s cubic-bezier(.2,.8,.2,1); }
+        /* .show 负责 display:flex（初始隐形/微缩），下一帧再加 .in 触发滑入过渡 */
+        .import-dropdown.show.in { opacity: 1; transform: translateY(0) scale(1); }
         .panel-header, .dialog-title { padding: 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--md-outline-variant, #e0e0e0); }
         .import-option { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; border-bottom: 1px solid var(--md-outline-variant, #f0f0f0); }
         .import-option:hover { background: rgba(99,102,241,.06); }
@@ -58,7 +101,46 @@
         .panel-footer, .dialog-footer { padding: 12px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--md-outline-variant, #e0e0e0); }
         .dialog-body { padding: 16px; }
         .dialog-body .text-field { box-sizing: border-box; }
+        /* 服务可达性自检状态 */
+        .conn-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+        .conn-status { font-size: 12px; line-height: 1.4; }
+        .conn-status.ok { color: #2e7d32; }
+        .conn-status.err { color: #c62828; }
+        .conn-status.pending { color: var(--md-on-surface-variant, #666); }
+        [data-theme="dark"] .conn-status.ok { color: #81c784; }
+        [data-theme="dark"] .conn-status.err { color: #ef9a9a; }
+        /* 批量多选 */
+        .song-check { flex: 0 0 auto; width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; }
+        .song-check-box { width: 20px; height: 20px; border-radius: 50%; border: 2px solid var(--md-outline, #c9c9d4); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; line-height: 1; color: #fff; }
+        .song-check-box.checked { background: var(--md-primary, #5b5fc7); border-color: var(--md-primary, #5b5fc7); }
+        .song-row.selected { background: rgba(99,102,241,.08); }
+        .batch-bar { position: fixed; left: 0; right: 0; bottom: 56px; z-index: 150; display: none; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; background: var(--md-surface, #fff); border-top: 1px solid var(--md-outline-variant, #e0e0e0); box-shadow: 0 -4px 16px rgba(0,0,0,.12); }
+        .batch-count { font-size: 13px; color: var(--md-on-surface-variant, #666); }
+        .batch-actions { display: flex; gap: 8px; align-items: center; }
+        [data-theme="dark"] .batch-bar { background: var(--md-surface, #1b1b1f); }
     </style>
+    <script>
+      // 主题联动：响应宿主 postMessage('songloft-theme') 与 document 上的 data-theme，
+      // 保证插件 UI 跟随主程序的浅色/深色切换。
+      (function () {
+        function applyTheme(t) {
+          const theme = (t || '').toString().toLowerCase();
+          if (theme !== 'dark' && theme !== 'light') return;
+          document.documentElement.setAttribute('data-theme', theme);
+          try { localStorage.setItem('songloft-theme', theme); } catch (e) {}
+        }
+        // 1) 宿主通过 postMessage 主动推送
+        window.addEventListener('message', function (e) {
+          if (e && e.data && e.data.type === 'songloft-theme') applyTheme(e.data.theme);
+        });
+        // 2) 宿主直接在 documentElement 上写 data-theme（common.js 注入时机）
+        const existing = document.documentElement.getAttribute('data-theme');
+        // 3) 兜底：本地记忆 / 系统偏好
+        const saved = (function () { try { return localStorage.getItem('songloft-theme'); } catch (e) { return null; } })();
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        applyTheme(existing || saved || (prefersDark ? 'dark' : 'light'));
+      })();
+    </script>
 </head>
 <body>
     <header class="app-bar">
@@ -96,7 +178,13 @@
             </div>
 
             <div class="card" id="listCard" style="margin-top:16px; display:none;">
-                <div class="card-header">搜索结果</div>
+                <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+                    <span>搜索结果</span>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button class="btn-text" id="backToHomeBtn" type="button">‹ 返回</button>
+                        <button class="btn-text" id="batchToggleBtn" type="button">多选</button>
+                    </div>
+                </div>
                 <div class="card-body" id="browserList" style="padding-top:0">
                     <div class="empty-state">请输入关键词搜索歌曲</div>
                 </div>
@@ -144,6 +232,11 @@
                         <label class="form-label">go-music-dl 服务地址</label>
                         <input type="text" class="text-field" id="configBaseUrl" placeholder="http://127.0.0.1:58091">
                         <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（插件会自动补 /music）</div>
+                        <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
+                        <div class="conn-row">
+                            <button class="btn-text" id="testConnBtn" type="button">测试连接</button>
+                            <span class="conn-status" id="connStatus"></span>
+                        </div>
                         <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
                             <button class="btn-filled" id="saveConfigBtn">保存配置</button>
                         </div>
@@ -170,6 +263,16 @@
     </nav>
 
     <div id="snackbar" class="snackbar"></div>
+
+    <!-- 批量导入操作栏（多选模式出现，悬浮在迷你播放条上方） -->
+    <div id="batchBar" class="batch-bar" style="display:none;">
+      <span id="batchCount" class="batch-count">已选 0 首</span>
+      <div class="batch-actions">
+        <button class="btn-text" id="batchClearBtn" type="button">取消</button>
+        <button class="btn-text" id="batchToLibraryBtn" type="button">导入到曲库</button>
+        <button class="btn-filled" id="batchToPlaylistBtn" type="button">导入到歌单</button>
+      </div>
+    </div>
 
     <!-- 导入到歌单下拉菜单（贴着三点按钮，无全屏遮罩） -->
     <div id="importPlaylistPanel" class="import-panel import-dropdown">
