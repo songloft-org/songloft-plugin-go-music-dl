@@ -6,7 +6,7 @@ import {
   FALLBACK_COVER,
   PLUGIN_ICON,
 } from './state.js'
-import { normalizeBaseUrl } from './api.js'
+import { normalizeBaseUrl, buildCoverUrl } from './api.js'
 import { fmtTime, showSnackbar } from './util.js'
 import { loadLyrics, highlightLyric } from './lyrics.js'
 
@@ -80,16 +80,17 @@ export function updateNowPlaying(song, cover) {
   const fpCover = document.getElementById('fpCoverImg')
   const bg = document.getElementById('fpBgImage')
   const placeholder = document.getElementById('fpCoverPlaceholder')
-  if (cover) {
+  const coverUrl = cover ? buildCoverUrl(cover) : ''
+  if (coverUrl) {
     if (pbCover) {
       pbCover.onerror = () => { pbCover.src = FALLBACK_COVER }
-      pbCover.src = cover
+      pbCover.src = coverUrl
     }
     if (fpCover) {
       fpCover.onerror = () => { fpCover.removeAttribute('src') }
-      fpCover.src = cover
+      fpCover.src = coverUrl
     }
-    if (bg) bg.style.backgroundImage = `url("${cover}")`
+    if (bg) bg.style.backgroundImage = `url("${coverUrl}")`
   } else {
     // 无封面：迷你播放条显示插件图标，全屏播放器仍用占位音符
     if (pbCover) { pbCover.onerror = () => { pbCover.src = FALLBACK_COVER }; pbCover.src = PLUGIN_ICON }

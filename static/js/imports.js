@@ -10,6 +10,7 @@ import {
   classifyError,
   friendlyError,
   switchSource,
+  buildCoverUrl,
   ERR_NETWORK,
   ERR_AUTH,
   ERR_SOURCE,
@@ -146,7 +147,7 @@ export async function importSongToLibrary(song) {
     try {
       return await API.import({
         id: s.id, name: s.name, artist: s.artist, album: s.album,
-        cover: s.cover, source: s.source, duration: s.duration, extra: s.extra,
+        cover: buildCoverUrl(s.cover), source: s.source, duration: s.duration, extra: s.extra,
       })
     } catch (e) {
       const msg = e && e.message ? e.message : ''
@@ -479,6 +480,39 @@ async function batchImportToPlaylist(playlistId) {
     if (failed) msg += `，${failed} 首失败` + (failHint || '')
     showSnackbar(msg)
     exitBatchMode()
+  } finally {
+    endImport()
+  }
+}
+
+// 整歌单一键导入为 Songloft 歌单：用歌单标题创建（同名幂等复用已有歌单），
+// 再把当前详情页的所有歌曲依次导入曲库并加入该歌单。复用逐首导入与批量加歌逻辑。
+export async function importCollectionAsPlaylist(pl, songs) {
+  if (!songs || !songs.length) {
+    showSnackbar('当前歌单没有可导入的歌曲')
+    return
+  }
+  if (!beginImport()) return
+  try {
+    const name = pl && pl.title ? pl.title : (pl && pl.contentType === 'album' ? '专辑歌单' : '导入的歌单')
+    showSnackbar('正在创建歌单…', true)
+    const playlist = await Host.playlists.create({ name, type: 'normal' })
+    if (!playlist || !playlist.id) {
+      showSnackbar('创建歌单失败')
+      return
+    }
+    // 主程序对同名歌单幂等：重名返回已存在的歌单（同一 id）。本地按 id 去重避免列表重复。
+    const existed = store.importPlaylists.some(
+      (p) => p && String(p.id) === String(playlist.id),
+    )
+    if (!existed) store.importPlaylists.push(playlist)
+    const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(playlist.id, songs)
+    let msg = `已导入 ${ok} 首到歌单「${name}」`
+    if (skipped) msg += `，${skipped} 首已在歌单中`
+    if (failed) msg += `，${failed} 首失败` + (failHint || '')
+    showSnackbar(msg)
+  } catch (e) {
+    showSnackbar(friendlyError(e, '导入失败'))
   } finally {
     endImport()
   }

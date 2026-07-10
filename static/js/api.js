@@ -44,6 +44,18 @@ export async function fetchAuth(url, opts = {}) {
   return res.json()
 }
 
+// 把音源原始封面 CDN 地址转成 go-music-dl 的 /music/cover_proxy 代理地址，
+// 规避网易云/QQ 等封面的防盗链 403 裂图（代理在中转时去掉了 Referer 限制）。
+// 幂等：已代理地址 / data: / blob: / 空值 直接返回原值，避免重复代理。
+export function buildCoverUrl(raw) {
+  if (!raw) return ''
+  if (/^(data:|blob:)/i.test(raw)) return raw
+  const base = normalizeBaseUrl(store.config.baseUrl)
+  if (!base) return raw
+  if (raw.startsWith(base)) return raw // 已是本实例代理地址
+  return `${base}/cover_proxy?url=${encodeURIComponent(raw)}`
+}
+
 export const API = {
   config: () => fetchAuth('./config'),
   saveConfig: (cfg) =>

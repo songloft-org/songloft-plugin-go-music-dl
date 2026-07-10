@@ -77,6 +77,9 @@ export const store = {
   allPlaylists: [],
   currentCat: 'all',
   songsBackToMyList: false,
+  // 发现（每日推荐 / 分类歌单）
+  discoverRecommendLoaded: false,
+  discoverCatsLoaded: false,
   // 多选 / 批量导入
   selectMode: false,
   selectedSongs: new Map(),

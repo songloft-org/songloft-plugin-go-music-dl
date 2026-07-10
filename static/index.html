@@ -83,6 +83,7 @@
         .mylist-cats { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; -webkit-overflow-scrolling: touch; }
         .mylist-cat { flex: 0 0 auto; font-size: 13px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--md-outline-variant, #e0e0e0); background: transparent; color: var(--md-on-surface, #333); cursor: pointer; white-space: nowrap; }
         .mylist-cat.active { background: var(--md-primary, #5b5fc7); border-color: var(--md-primary, #5b5fc7); color: #fff; }
+        .cat-group-title { font-size: 12px; color: var(--md-on-surface-variant, #666); margin: 10px 2px 2px; font-weight: 600; }
 
         /* 导入到歌单对话框 */
         .menu-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 200; }
@@ -215,6 +216,48 @@
         </div>
     </div>
 
+    <div class="tab-content" id="tab-discover">
+        <div class="container">
+            <div class="card">
+                <div class="card-body">
+                    <div class="mylist-cats" id="discoverSubSwitch" style="padding:0;">
+                        <button type="button" class="mylist-cat active" data-sub="recommend">每日推荐</button>
+                        <button type="button" class="mylist-cat" data-sub="categories">分类歌单</button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="discoverRecommendSection">
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+                        <span>每日推荐歌单</span>
+                        <button class="btn-text" id="refreshDiscoverRecommendBtn">刷新</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="discoverRecommendList" class="playlist-grid" style="padding-top:0"><div class="empty-state">加载中…</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="discoverCategoriesSection" style="display:none;">
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">歌单分类</div>
+                    <div class="card-body">
+                        <div class="card-desc" style="margin-bottom:10px;">选择音乐源与分类，浏览对应歌单。</div>
+                        <div class="mylist-cats" id="discoverCatSources"></div>
+                        <div id="discoverCatChips"></div>
+                    </div>
+                </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">歌单</div>
+                    <div class="card-body">
+                        <div id="discoverCatPlaylists" class="playlist-grid" style="padding-top:0"><div class="empty-state">选择上方分类查看歌单</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="tab-content" id="tab-mylist">
         <div class="container">
             <div id="myPlaylistView">
@@ -238,6 +281,7 @@
         <header class="songs-overlay-bar">
             <button class="songs-back-btn" id="backToPlaylistsBtn">← 返回</button>
             <h1 id="mySongsTitle">歌单歌曲</h1>
+            <button class="btn-filled" id="importCollectionBtn" style="margin-left:auto;">导入为歌单</button>
         </header>
         <div class="container" style="padding-bottom:150px;">
             <div class="card" style="margin-top:12px;">
@@ -291,6 +335,7 @@
 
     <nav class="tab-bar">
         <button class="tab-item active" data-tab="browser"><span>搜索</span></button>
+        <button class="tab-item" data-tab="discover"><span>发现</span></button>
         <button class="tab-item" data-tab="mylist"><span>我的歌单</span></button>
         <button class="tab-item" data-tab="config"><span>插件设置</span></button>
     </nav>

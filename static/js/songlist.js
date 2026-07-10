@@ -8,7 +8,7 @@ import {
   MAX_SWITCH_ROUNDS,
 } from './state.js'
 import { escapeHtml, formatBitrateBadge, setSongBitrate } from './util.js'
-import { normalizeBaseUrl, gmdFetch, switchSource } from './api.js'
+import { normalizeBaseUrl, gmdFetch, switchSource, buildCoverUrl } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
 
@@ -71,7 +71,7 @@ export function applySwitchedSong(card, alt) {
       alt.album || '',
     )} · ${escapeHtml(sourceLabel(alt.source))}`
   const coverImg = card.querySelector('.song-cover')
-  if (coverImg && alt.cover) coverImg.src = alt.cover
+  if (coverImg && alt.cover) coverImg.src = buildCoverUrl(alt.cover)
 }
 
 // 失效后多轮换源（贴合 go-music-dl 的闭环）：每轮换到候选都重新 inspect 验证，
@@ -157,7 +157,7 @@ export function renderSong(s, index, opts = {}) {
   const card = document.createElement('div')
   card.className = 'song-row'
   cardData.set(card, { song: s, index })
-  const cover = s.cover || FALLBACK_COVER
+  const cover = buildCoverUrl(s.cover) || FALLBACK_COVER
   const key = songKey(s)
   const sel = store.selectMode && store.selectedSongs.has(key)
   const checkHtml = store.selectMode

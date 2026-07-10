@@ -7,8 +7,9 @@ import {
   PLUGIN_ICON,
 } from './state.js'
 import { escapeHtml } from './util.js'
-import { normalizeBaseUrl, gmdFetch, isNetworkError } from './api.js'
+import { normalizeBaseUrl, gmdFetch, isNetworkError, buildCoverUrl } from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
+import { importCollectionAsPlaylist } from './imports.js'
 
 // 解析 /music/user_playlists 返回的 HTML：
 // 优先读卡片内「导入本地」按钮的 data-external-id / data-source（显式属性，无 & 转义问题）；
@@ -123,7 +124,7 @@ export function parsePlaylistSongs(html) {
 export function renderPlaylistRow(pl) {
   const card = document.createElement('div')
   card.className = 'playlist-card'
-  const cover = pl.cover || PLUGIN_ICON
+  const cover = buildCoverUrl(pl.cover) || PLUGIN_ICON
   const tagText = pl.tag || pl.source || ''
   const tag = escapeHtml(sourceLabel(tagText) || tagText)
   card.innerHTML = `
@@ -254,6 +255,9 @@ export async function openCollection(pl, endpoint, showImport) {
   document.getElementById('mySongsView').style.display = 'block'
   document.getElementById('mySongsTitle').textContent =
     pl.title || (endpoint === 'album' ? '专辑歌曲' : '歌单歌曲')
+  // 歌单/专辑详情页一键导入为 Songloft 歌单：复用当前详情页的歌曲队列
+  const importBtn = document.getElementById('importCollectionBtn')
+  if (importBtn) importBtn.onclick = () => importCollectionAsPlaylist(pl, store.queue)
   const listEl = document.getElementById('mySongsList')
   listEl.innerHTML = '<div class="empty-state">加载中…</div>'
   const base = normalizeBaseUrl(store.config.baseUrl)

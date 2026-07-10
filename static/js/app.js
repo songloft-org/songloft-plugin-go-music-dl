@@ -29,6 +29,10 @@ import {
 } from './search.js'
 import { loadUserPlaylists, backToPlaylists } from './playlists.js'
 import {
+  loadDiscoverRecommend,
+  loadDiscoverCategories,
+} from './discover.js'
+import {
   openImportPanel,
   closeImportPanel,
   importToLibrary,
@@ -60,6 +64,8 @@ function initTabs() {
         .getElementById('tab-' + tab.dataset.tab)
         .classList.add('active')
       if (tab.dataset.tab === 'mylist' && !store.myListLoaded) loadUserPlaylists()
+      if (tab.dataset.tab === 'discover' && !store.discoverRecommendLoaded)
+        loadDiscoverRecommend()
       if (tab.dataset.tab === 'browser') showBrowserHome()
     }
   })
@@ -195,6 +201,32 @@ document.addEventListener('DOMContentLoaded', () => {
     loadRecommend()
   }
   document.getElementById('refreshMyListBtn').onclick = loadUserPlaylists
+  // 发现页：每日推荐 / 分类歌单 子切换
+  const discoverSub = document.getElementById('discoverSubSwitch')
+  if (discoverSub) {
+    discoverSub.querySelectorAll('.mylist-cat').forEach((btn) => {
+      btn.onclick = () => {
+        discoverSub
+          .querySelectorAll('.mylist-cat')
+          .forEach((b) => b.classList.remove('active'))
+        btn.classList.add('active')
+        const sub = btn.dataset.sub
+        document.getElementById('discoverRecommendSection').style.display =
+          sub === 'recommend' ? 'block' : 'none'
+        document.getElementById('discoverCategoriesSection').style.display =
+          sub === 'categories' ? 'block' : 'none'
+        if (sub === 'recommend' && !store.discoverRecommendLoaded)
+          loadDiscoverRecommend()
+        if (sub === 'categories' && !store.discoverCatsLoaded)
+          loadDiscoverCategories()
+      }
+    })
+  }
+  const refreshDiscoverRecommendBtn = document.getElementById(
+    'refreshDiscoverRecommendBtn',
+  )
+  if (refreshDiscoverRecommendBtn)
+    refreshDiscoverRecommendBtn.onclick = loadDiscoverRecommend
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
   // 搜索结果页「返回首页」：回到每日推荐，无需刷新整页
   document.getElementById('backToHomeBtn').onclick = backToBrowserHome
