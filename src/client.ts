@@ -95,18 +95,25 @@ async function fetchText(url: string): Promise<string> {
   return await res.text()
 }
 
-export async function searchSongs(
+export type SearchType = 'song' | 'playlist' | 'album'
+
+/**
+ * 构造并请求 go-music-dl 的 /music/search，返回原始 HTML。
+ * 单曲 / 歌单 / 专辑共用同一接口，仅 type 参数不同。
+ */
+async function fetchSearchHtml(
   keyword: string,
   config: GoMusicDlConfig,
-  page = 1,
-  pageSize = 20,
-): Promise<GoSong[]> {
+  type: SearchType,
+  page: number,
+  pageSize: number,
+): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl)
   const sources =
     config.sources && config.sources.length ? config.sources : DEFAULT_SOURCES
   const params: string[] = [
     `q=${encodeURIComponent(keyword)}`,
-    `type=song`,
+    `type=${type}`,
     `page=${page}`,
     `count=${pageSize}`,
   ]
@@ -114,8 +121,66 @@ export async function searchSongs(
     params.push(`sources=${encodeURIComponent(s)}`)
   }
   const url = `${base}/search?${params.join('&')}`
-  const html = await fetchText(url)
+  return fetchText(url)
+}
+
+export async function searchSongs(
+  keyword: string,
+  config: GoMusicDlConfig,
+  page = 1,
+  pageSize = 20,
+): Promise<GoSong[]> {
+  const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize)
   return parseSongCards(html)
+}
+
+export interface GoCollection {
+  id: string
+  source: string
+  title: string
+  cover: string
+  creator: string
+  count: number
+  contentType: 'playlist' | 'album'
+}
+
+/**
+ * 解析 go-music-dl 歌单/专辑搜索结果 HTML 中的 .playlist-card。
+ * 沙箱内无 DOMParser，用正则从每首卡片内的「导入本地」按钮（class="ctrl-btn primary"）
+ * 提取 data-* 属性。该按钮顺序固定：data-name / data-cover / data-creator /
+ * data-track-count / data-source / data-external-id / data-content-type，
+ * 其中 data-content-type 直接告诉我们这是 playlist 还是 album。
+ */
+export function parsePlaylistCards(html: string): GoCollection[] {
+  const cards: GoCollection[] = []
+  const re =
+    /class="ctrl-btn primary"[^>]*data-name="([^"]*)"[^>]*data-cover="([^"]*)"[^>]*data-creator="([^"]*)"[^>]*data-track-count="([^"]*)"[^>]*data-source="([^"]*)"[^>]*data-external-id="([^"]*)"[^>]*data-content-type="([^"]*)"/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html))) {
+    const [, title, cover, creator, count, source, id, contentType] = m
+    if (!id) continue
+    cards.push({
+      id,
+      source,
+      title: unescapeHtml(title),
+      cover: unescapeHtml(cover),
+      creator: unescapeHtml(creator),
+      count: Number(count) || 0,
+      contentType: contentType === 'album' ? 'album' : 'playlist',
+    })
+  }
+  return cards
+}
+
+export async function searchCollections(
+  keyword: string,
+  config: GoMusicDlConfig,
+  type: 'playlist' | 'album',
+  page = 1,
+  pageSize = 50,
+): Promise<GoCollection[]> {
+  const html = await fetchSearchHtml(keyword, config, type, page, pageSize)
+  return parsePlaylistCards(html)
 }
 
 /**

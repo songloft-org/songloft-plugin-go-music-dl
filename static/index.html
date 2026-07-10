@@ -14,6 +14,8 @@
         .song-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .song-sub { font-size: 12px; color: var(--md-on-surface-variant, #666); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .song-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+        .song-more-btn { width: 36px; height: 36px; border-radius: 50%; border: none; background: transparent; color: var(--md-on-surface-variant, #666); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+        .song-more-btn:hover { background: rgba(99,102,241,.10); color: var(--md-primary, #5b5fc7); }
         .song-status { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; }
         .song-status.status-pending { background: rgba(0,0,0,.06); color: #888; }
         .song-status.status-checking { background: rgba(99,102,241,.12); color: #5b5fc7; }
@@ -37,6 +39,25 @@
         .mylist-cats { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; -webkit-overflow-scrolling: touch; }
         .mylist-cat { flex: 0 0 auto; font-size: 13px; padding: 6px 14px; border-radius: 999px; border: 1px solid var(--md-outline-variant, #e0e0e0); background: transparent; color: var(--md-on-surface, #333); cursor: pointer; white-space: nowrap; }
         .mylist-cat.active { background: var(--md-primary, #5b5fc7); border-color: var(--md-primary, #5b5fc7); color: #fff; }
+
+        /* 导入到歌单对话框 */
+        .menu-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 200; }
+        .import-panel, .dialog-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 201; width: min(360px, 88vw); max-height: 78vh; display: none; flex-direction: column; background: var(--md-surface, #fff); border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.25); overflow: hidden; }
+        .import-panel.show, .dialog-panel.show { display: flex; }
+        /* 导入下拉菜单：贴着三点按钮弹出，无全屏遮罩 */
+        .import-dropdown { top: auto; left: auto; transform: none; width: min(280px, 72vw); max-height: 60vh; border-radius: 14px; box-shadow: 0 10px 28px rgba(0,0,0,.18); opacity: 0; transition: opacity .12s ease; }
+        .import-dropdown.show { opacity: 1; }
+        .panel-header, .dialog-title { padding: 16px; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--md-outline-variant, #e0e0e0); }
+        .import-option { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; border-bottom: 1px solid var(--md-outline-variant, #f0f0f0); }
+        .import-option:hover { background: rgba(99,102,241,.06); }
+        .import-option .material-symbols-outlined { color: var(--md-on-surface-variant, #666); font-size: 20px; }
+        .import-playlist-list { overflow-y: auto; max-height: 42vh; }
+        .import-playlist-item { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; border-bottom: 1px solid var(--md-outline-variant, #f0f0f0); }
+        .import-playlist-item:hover { background: rgba(99,102,241,.06); }
+        .import-playlist-item svg { flex: 0 0 auto; color: var(--md-on-surface-variant, #666); }
+        .panel-footer, .dialog-footer { padding: 12px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--md-outline-variant, #e0e0e0); }
+        .dialog-body { padding: 16px; }
+        .dialog-body .text-field { box-sizing: border-box; }
     </style>
 </head>
 <body>
@@ -52,6 +73,11 @@
                     <div style="display:flex;gap:8px;align-items:center;">
                         <input type="text" class="text-field" id="searchInput" placeholder="搜索歌手、歌曲..." style="flex:1">
                         <button class="btn-filled" id="searchBtn" style="padding:0 16px;">搜索</button>
+                    </div>
+                    <div class="mylist-cats" id="searchTypeSwitch" style="padding:0;">
+                        <button type="button" class="mylist-cat active" data-type="song">单曲</button>
+                        <button type="button" class="mylist-cat" data-type="playlist">歌单</button>
+                        <button type="button" class="mylist-cat" data-type="album">专辑</button>
                     </div>
                 </div>
             </div>
@@ -144,6 +170,36 @@
     </nav>
 
     <div id="snackbar" class="snackbar"></div>
+
+    <!-- 导入到歌单下拉菜单（贴着三点按钮，无全屏遮罩） -->
+    <div id="importPlaylistPanel" class="import-panel import-dropdown">
+      <div class="panel-header">导入到歌单</div>
+      <div class="import-option" onclick="importToLibrary()">
+        <span class="material-symbols-outlined">library_add</span>
+        <span>仅添加到歌曲库</span>
+      </div>
+      <div id="importPlaylistList" class="import-playlist-list"></div>
+      <div class="import-option" onclick="createNewPlaylist()">
+        <span class="material-symbols-outlined">add</span>
+        <span>新建歌单…</span>
+      </div>
+      <div class="panel-footer">
+        <button class="btn-text" onclick="closeImportPanel()">取消</button>
+      </div>
+    </div>
+
+    <!-- 新建歌单对话框 -->
+    <div id="newPlaylistBackdrop" class="menu-backdrop" style="display:none" onclick="closeNewPlaylistDialog()"></div>
+    <div id="newPlaylistDialog" class="dialog-panel">
+      <div class="dialog-title">新建歌单</div>
+      <div class="dialog-body">
+        <input type="text" class="text-field" id="newPlaylistName" placeholder="请输入歌单名称" autocomplete="off" />
+      </div>
+      <div class="dialog-footer">
+        <button class="btn-text" onclick="closeNewPlaylistDialog()">取消</button>
+        <button class="btn-filled" id="confirmNewPlaylist">确定</button>
+      </div>
+    </div>
 
     <!-- 真实在插件内播放的音频元素 -->
     <audio id="audio" preload="none"></audio>

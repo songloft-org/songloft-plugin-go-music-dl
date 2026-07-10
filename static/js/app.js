@@ -73,13 +73,35 @@ const API = {
   config: () => fetchAuth('./config'),
   saveConfig: (cfg) =>
     fetchAuth('./config', { method: 'POST', body: JSON.stringify(cfg) }),
-  search: (q) => fetchAuth(`./search?q=${encodeURIComponent(q)}`),
+  search: (q, type) =>
+    fetchAuth(
+      `./search?q=${encodeURIComponent(q)}${
+        type ? `&type=${encodeURIComponent(type)}` : ''
+      }`,
+    ),
   import: (item) =>
     fetchAuth('./import', {
       method: 'POST',
       body: JSON.stringify({ item }),
     }),
 }
+
+// 宿主歌单 API：经插件后端代理（/playlists...）调用，避免 common.js 的
+// API_BASE='.' 把 /api/v1 拼成相对路径导致 404。插件后端用宿主绝对地址转发。
+const Host = {
+  playlists: {
+    // 带 _t 防缓存：每次打开面板都拉最新歌单，避免浏览器缓存了创建前的旧列表
+    list: () => window.SongloftPlugin.apiGet('/playlists?_t=' + Date.now()),
+    create: (playlist) => window.SongloftPlugin.apiPost('/playlists', playlist),
+    addSongs: (id, songIds) =>
+      window.SongloftPlugin.apiPost(`/playlists/${id}/songs`, {
+        song_ids: songIds,
+      }),
+  },
+}
+
+// 搜索类型：单曲 / 歌单 / 专辑（整合在搜索框的分段切换里）
+let currentSearchType = 'song'
 
 function showSnackbar(msg) {
   const el = document.getElementById('snackbar')
@@ -447,15 +469,25 @@ async function doSearch() {
   document.getElementById('recommendCard').style.display = 'none'
   document.getElementById('listCard').style.display = 'block'
   try {
-    const songs = await API.search(q)
-    if (!Array.isArray(songs) || songs.length === 0) {
+    const data = await API.search(q, currentSearchType)
+    if (!Array.isArray(data) || data.length === 0) {
       list.innerHTML = '<div class="empty-state">未找到结果</div>'
       return
     }
-    queue = songs
-    list.innerHTML = ''
-    songs.forEach((s, i) => list.appendChild(renderSong(s, i)))
-    scheduleInspect(list)
+    if (currentSearchType === 'song') {
+      queue = data
+      list.innerHTML = ''
+      data.forEach((s, i) => list.appendChild(renderSong(s, i)))
+      scheduleInspect(list)
+    } else {
+      // 歌单 / 专辑：渲染卡片网格
+      const grid = document.createElement('div')
+      grid.className = 'playlist-grid'
+      grid.style.paddingTop = '4px'
+      data.forEach((pl) => grid.appendChild(renderPlaylistRow(pl)))
+      list.innerHTML = ''
+      list.appendChild(grid)
+    }
   } catch (e) {
     list.innerHTML = `<div class="empty-state">搜索失败: ${escapeHtml(e.message)}</div>`
   }
@@ -743,7 +775,11 @@ function renderSong(s, index, opts = {}) {
   cardData.set(card, { song: s, index })
   const cover = s.cover || FALLBACK_COVER
   const importBtnHtml = showImport
-    ? '<button class="btn-filled" data-act="dl">导入到库</button>'
+    ? `<button class="song-more-btn" data-act="dl" title="导入" aria-label="导入">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/>
+        </svg>
+      </button>`
     : ''
   card.innerHTML = `
     <img src="${cover}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
@@ -753,57 +789,222 @@ function renderSong(s, index, opts = {}) {
       <span class="song-status status-pending">待检测</span>
     </div>
     <div class="song-actions">
-      <button class="btn-text" data-act="play">试听</button>
       ${importBtnHtml}
     </div>`
-  card.querySelector('[data-act="play"]').onclick = (e) => {
-    e.stopPropagation()
-    const d = cardData.get(card)
-    if (d) playSong(d.song, d.index)
-  }
   const dlBtn = card.querySelector('[data-act="dl"]')
   if (dlBtn)
-  dlBtn.onclick = async (e) => {
-    e.stopPropagation()
-    const d = cardData.get(card)
-    if (!d) return
-    const s2 = d.song
-    const btn = dlBtn
-    try {
-      showSnackbar('正在导入到曲库...')
-      const r = await API.import({
-        id: s2.id,
-        name: s2.name,
-        artist: s2.artist,
-        album: s2.album,
-        cover: s2.cover,
-        source: s2.source,
-        duration: s2.duration,
-        extra: s2.extra,
-      })
-      if (r && r.success) {
-        showSnackbar(r.already_local ? '已在曲库中' : '已导入到曲库')
-      } else {
-        showSnackbar('导入失败')
-      }
-    } catch (e) {
-      const msg = e && e.message ? e.message : ''
-      if (msg.indexOf('音源已失效') >= 0) {
-        // 导入前校验发现该音源已失效：标红卡片并禁用，避免反复点失败
-        setSongStatus(card, 'fail', '音源已失效')
-        setCardEnabled(card, false)
-        showSnackbar('导入失败：音源已失效')
-      } else {
-        showSnackbar('导入失败: ' + msg)
-      }
+    dlBtn.onclick = (e) => {
+      e.stopPropagation()
+      e.preventDefault()
+      const d = cardData.get(card)
+      if (d) openImportPanel(d.song, dlBtn)
     }
-  }
   // 点击整行：直接播放（迷你播放条常驻底部；点播放条本身可展开全屏播放器）
   card.onclick = () => {
     const d = cardData.get(card)
     if (d) playSong(d.song, d.index)
   }
   return card
+}
+
+// ---------- 导入到歌单对话框 ----------
+// 当前待导入的歌曲（模块级，供对话框各分支复用）
+let pendingImportItem = null
+let newPlaylistCallback = null
+// 歌单列表（模块级缓存，建歌单后本地 push 即时显示，无需等重新拉取）
+let importPlaylists = []
+
+function openImportPanel(song, anchor) {
+  pendingImportItem = song
+  const panel = document.getElementById('importPlaylistPanel')
+  if (!panel) return
+  // 即时显示面板（内部先展示「加载中…」），不再等网络、不再盖全屏遮罩
+  panel.classList.add('show')
+  loadImportPlaylists()
+
+  // 贴着三点按钮定位（对齐主程序 PopupMenuButton 的原地下拉范式）
+  // 先显示再测量，避免尺寸为 0
+  const pr = panel.getBoundingClientRect()
+  const ar = anchor ? anchor.getBoundingClientRect() : null
+  if (ar) {
+    const margin = 8
+    let top = ar.bottom + 4
+    if (top + pr.height > window.innerHeight - margin) {
+      // 下方空间不足，翻到按钮上方
+      top = ar.top - 4 - pr.height
+    }
+    top = Math.max(margin, top)
+    // 默认右对齐按钮右缘；右侧放不下则改为左对齐按钮左缘
+    let left = ar.right - pr.width
+    if (left < margin) left = Math.min(ar.left, window.innerWidth - pr.width - margin)
+    left = Math.max(margin, left)
+    panel.style.top = top + 'px'
+    panel.style.left = left + 'px'
+  } else {
+    panel.style.top = '50%'
+    panel.style.left = '50%'
+    panel.style.transform = 'translate(-50%, -50%)'
+  }
+
+  // 点外部 / Esc 关闭
+  setTimeout(() => {
+    document.addEventListener('click', onImportPanelOutside, true)
+    document.addEventListener('keydown', onImportPanelEsc, true)
+  }, 0)
+}
+
+function onImportPanelOutside(e) {
+  const panel = document.getElementById('importPlaylistPanel')
+  if (panel && panel.classList.contains('show') && !panel.contains(e.target)) {
+    closeImportPanel()
+  }
+}
+function onImportPanelEsc(e) {
+  if (e.key === 'Escape') closeImportPanel()
+}
+
+function closeImportPanel() {
+  const panel = document.getElementById('importPlaylistPanel')
+  if (panel) panel.classList.remove('show')
+  document.removeEventListener('click', onImportPanelOutside, true)
+  document.removeEventListener('keydown', onImportPanelEsc, true)
+}
+
+async function loadImportPlaylists() {
+  const listEl = document.getElementById('importPlaylistList')
+  if (!listEl) return
+  listEl.innerHTML = '<div class="empty-state">加载中…</div>'
+  try {
+    const result = await Host.playlists.list()
+    importPlaylists =
+      Array.isArray(result) ? result : (result && result.playlists) || []
+    renderImportPlaylistList()
+  } catch (e) {
+    if (listEl) listEl.innerHTML = '<div class="empty-state">歌单加载失败</div>'
+  }
+}
+
+function renderImportPlaylistList() {
+  const listEl = document.getElementById('importPlaylistList')
+  if (!listEl) return
+  const playlists = importPlaylists || []
+  listEl.innerHTML = ''
+  if (!playlists.length) {
+    listEl.innerHTML = '<div class="empty-state">暂无歌单，可新建</div>'
+    return
+  }
+  playlists.forEach((pl) => {
+    const div = document.createElement('div')
+    div.className = 'import-playlist-item'
+    div.innerHTML = `
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+      </svg>
+      <span>${escapeHtml(pl.name || '未命名')}</span>`
+    div.onclick = () => importToPlaylist(pl.id)
+    listEl.appendChild(div)
+  })
+}
+
+// 先 import 进曲库拿 song.id，再按需加入歌单
+async function doImportToLibrary() {
+  const s = pendingImportItem
+  const r = await API.import({
+    id: s.id, name: s.name, artist: s.artist, album: s.album,
+    cover: s.cover, source: s.source, duration: s.duration, extra: s.extra,
+  })
+  return r
+}
+
+async function importToLibrary() {
+  if (!pendingImportItem) return
+  closeImportPanel()
+  try {
+    showSnackbar('正在导入到曲库...')
+    const r = await doImportToLibrary()
+    if (r && r.success) showSnackbar(r.already_local ? '已在曲库中' : '已导入到曲库')
+    else showSnackbar('导入失败')
+  } catch (e) {
+    const msg = e && e.message ? e.message : ''
+    if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
+    else showSnackbar('导入失败: ' + msg)
+  }
+}
+
+async function importToPlaylist(playlistId) {
+  if (!pendingImportItem) return
+  closeImportPanel()
+  try {
+    showSnackbar('正在导入到曲库...')
+    const r = await doImportToLibrary()
+    if (!r || !r.success || !r.song) {
+      showSnackbar('导入失败')
+      return
+    }
+    await Host.playlists.addSongs(playlistId, [r.song.id])
+    showSnackbar('已导入到歌单')
+  } catch (e) {
+    const msg = e && e.message ? e.message : ''
+    if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
+    else showSnackbar('导入失败: ' + msg)
+  }
+}
+
+function createNewPlaylist() {
+  if (!pendingImportItem) return
+  closeImportPanel()
+  const dialog = document.getElementById('newPlaylistDialog')
+  const backdrop = document.getElementById('newPlaylistBackdrop')
+  const input = document.getElementById('newPlaylistName')
+  if (!dialog || !backdrop) return
+  newPlaylistCallback = async (name) => {
+    try {
+      const playlist = await Host.playlists.create({ name: name, type: 'normal' })
+      if (!playlist || !playlist.id) {
+        showSnackbar('创建歌单失败')
+        return
+      }
+      showSnackbar('正在导入到曲库...')
+      const r = await doImportToLibrary()
+      if (!r || !r.success || !r.song) {
+        showSnackbar('导入失败')
+        return
+      }
+      await Host.playlists.addSongs(playlist.id, [r.song.id])
+      // 本地即时更新列表，避免重新拉取（宿主列表有缓存/一致性延迟时看不到新建项）
+      importPlaylists.push(playlist)
+      renderImportPlaylistList()
+      showSnackbar('已导入到新歌单')
+    } catch (e) {
+      const msg = e && e.message ? e.message : ''
+      if (msg.indexOf('音源已失效') >= 0) showSnackbar('导入失败：音源已失效')
+      else showSnackbar('导入失败: ' + msg)
+    }
+  }
+  if (input) input.value = ''
+  backdrop.style.display = 'block'
+  dialog.classList.add('show')
+  if (input) setTimeout(() => input.focus(), 50)
+}
+
+function closeNewPlaylistDialog() {
+  const dialog = document.getElementById('newPlaylistDialog')
+  const backdrop = document.getElementById('newPlaylistBackdrop')
+  if (dialog) dialog.classList.remove('show')
+  if (backdrop) backdrop.style.display = 'none'
+  newPlaylistCallback = null
+}
+
+async function confirmNewPlaylist() {
+  const input = document.getElementById('newPlaylistName')
+  const name = (input && input.value ? input.value : '').trim()
+  if (!name) {
+    showSnackbar('请输入歌单名称')
+    return
+  }
+  const cb = newPlaylistCallback
+  closeNewPlaylistDialog()
+  if (cb) await cb(name)
 }
 
 // ---------- 我的歌单 ----------
@@ -839,7 +1040,19 @@ function parsePlaylists(html) {
     const count = countEl ? countEl.textContent.replace(/\D/g, '') : '0'
     const tagEl = card.querySelector('.tag')
     const tag = tagEl ? tagEl.textContent.trim() : source
-    out.push({ id, source, title, cover, creator, count, tag })
+    // 判定内容类型：优先取卡片内「导入本地」按钮的 data-content-type
+    // （搜索歌单/专辑时后端会写入 playlist/album）；否则从 navigateTo 路由推断，
+    // 仍无则默认 playlist（每日推荐、我的歌单均为歌单）。
+    let contentType = 'playlist'
+    const ctBtn = card.querySelector('[data-content-type]')
+    if (ctBtn) {
+      const ct = ctBtn.getAttribute('data-content-type')
+      if (ct === 'album') contentType = 'album'
+    } else {
+      const nav = card.getAttribute('onclick') || ''
+      if (/\/album\b/.test(nav)) contentType = 'album'
+    }
+    out.push({ id, source, title, cover, creator, count, tag, contentType })
   })
   return out
 }
@@ -913,7 +1126,8 @@ function renderPlaylistRow(pl) {
   const card = document.createElement('div')
   card.className = 'playlist-card'
   const cover = pl.cover || PLUGIN_ICON
-  const tag = escapeHtml(sourceLabel(pl.tag) || pl.tag || '')
+  const tagText = pl.tag || pl.source || ''
+  const tag = escapeHtml(sourceLabel(tagText) || tagText)
   card.innerHTML = `
     <div class="playlist-cover">
       <img src="${cover}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_COVER}'">
@@ -923,7 +1137,10 @@ function renderPlaylistRow(pl) {
       <div class="playlist-title">${escapeHtml(pl.title)}</div>
       <div class="playlist-sub">${escapeHtml(pl.creator) || '未知'} · 共 ${escapeHtml(pl.count)} 首</div>
     </div>`
-  card.onclick = () => openPlaylist(pl)
+  card.onclick = () => {
+    if (pl.contentType === 'album') openAlbum(pl)
+    else openPlaylist(pl)
+  }
   return card
 }
 
@@ -1023,10 +1240,20 @@ async function loadUserPlaylists() {
   }
 }
 
-async function openPlaylist(pl) {
+// 进入歌单/专辑详情：拉取歌曲列表并渲染。
+// endpoint: 'playlist' | 'album'（go-music-dl 两接口同参：id/source）。
+// showImport: 是否开放逐首「导入到库」。为保持一致性，搜索单曲、专辑详情、歌单详情均开放。
+// 来源可能是「我的歌单」页或「搜索」页，返回时需回到对应视图（见 backToPlaylists）。
+let songsBackToMyList = false
+
+async function openCollection(pl, endpoint, showImport) {
+  songsBackToMyList = !!document
+    .getElementById('tab-mylist')
+    .classList.contains('active')
   document.getElementById('myPlaylistView').style.display = 'none'
   document.getElementById('mySongsView').style.display = 'block'
-  document.getElementById('mySongsTitle').textContent = pl.title || '歌单歌曲'
+  document.getElementById('mySongsTitle').textContent =
+    pl.title || (endpoint === 'album' ? '专辑歌曲' : '歌单歌曲')
   const listEl = document.getElementById('mySongsList')
   listEl.innerHTML = '<div class="empty-state">加载中…</div>'
   const base = normalizeBaseUrl(config.baseUrl)
@@ -1035,7 +1262,7 @@ async function openPlaylist(pl) {
     return
   }
   try {
-    const url = `${base}/playlist?id=${encodeURIComponent(pl.id)}&source=${encodeURIComponent(pl.source)}`
+    const url = `${base}/${endpoint}?id=${encodeURIComponent(pl.id)}&source=${encodeURIComponent(pl.source)}`
     const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (!res.ok) {
       listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
@@ -1044,21 +1271,31 @@ async function openPlaylist(pl) {
     const html = await res.text()
     const songs = parsePlaylistSongs(html)
     if (!songs.length) {
-      listEl.innerHTML = '<div class="empty-state">该歌单暂无歌曲</div>'
+      listEl.innerHTML = `<div class="empty-state">该${endpoint === 'album' ? '专辑' : '歌单'}暂无歌曲</div>`
       return
     }
     queue = songs
     listEl.innerHTML = ''
-    songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport: false })))
+    songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport })))
     scheduleInspect(listEl)
   } catch (e) {
     listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
   }
 }
 
+async function openPlaylist(pl) {
+  return openCollection(pl, 'playlist', true)
+}
+
+async function openAlbum(pl) {
+  return openCollection(pl, 'album', true)
+}
+
 function backToPlaylists() {
   document.getElementById('mySongsView').style.display = 'none'
-  document.getElementById('myPlaylistView').style.display = 'block'
+  if (songsBackToMyList) {
+    document.getElementById('myPlaylistView').style.display = 'block'
+  }
 }
 
 function initTabs() {
@@ -1141,6 +1378,13 @@ function initPlayer() {
   // 供 index.html 内联 onclick 调用
   window.openFullscreenPlayer = openFullscreenPlayer
   window.closeFullscreenPlayer = closeFullscreenPlayer
+  window.openImportPanel = openImportPanel
+  window.closeImportPanel = closeImportPanel
+  window.importToLibrary = importToLibrary
+  window.importToPlaylist = importToPlaylist
+  window.createNewPlaylist = createNewPlaylist
+  window.closeNewPlaylistDialog = closeNewPlaylistDialog
+  window.confirmNewPlaylist = confirmNewPlaylist
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -1153,6 +1397,17 @@ document.addEventListener('DOMContentLoaded', () => {
     .addEventListener('keydown', (e) => {
       if (e.key === 'Enter') doSearch()
     })
+  // 搜索框「单曲 / 歌单 / 专辑」分段切换
+  document.getElementById('searchTypeSwitch').querySelectorAll('.mylist-cat').forEach((btn) => {
+    btn.onclick = () => {
+      document
+        .getElementById('searchTypeSwitch')
+        .querySelectorAll('.mylist-cat')
+        .forEach((b) => b.classList.remove('active'))
+      btn.classList.add('active')
+      currentSearchType = btn.dataset.type || 'song'
+    }
+  })
   document.getElementById('saveConfigBtn').onclick = saveConfig
   // 全选 / 清空：切换勾选后立即保存，免去再点「保存配置」
   document.getElementById('selectAllSourcesBtn').onclick = () => { setAllSources(true); saveConfig() }
@@ -1176,4 +1431,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   document.getElementById('refreshMyListBtn').onclick = loadUserPlaylists
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
+  const confirmNewPlaylistBtn = document.getElementById('confirmNewPlaylist')
+  if (confirmNewPlaylistBtn) confirmNewPlaylistBtn.onclick = confirmNewPlaylist
 })

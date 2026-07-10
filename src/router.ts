@@ -6,7 +6,13 @@ import {
 } from '@songloft/plugin-sdk'
 import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
 import { getConfig, saveConfig, GoMusicDlConfig } from './config'
-import { searchSongs, buildDownloadUrl, fetchLyric, GoSong } from './client'
+import {
+  searchSongs,
+  searchCollections,
+  buildDownloadUrl,
+  fetchLyric,
+  GoSong,
+} from './client'
 
 interface SongItem {
   id: string
@@ -161,6 +167,32 @@ async function importRemoteSong(item: SongItem): Promise<any> {
   return songs[0]
 }
 
+// 代理宿主 API：用插件运行时拿到的宿主绝对地址 + token 调用，
+// 避免前端直连时因 common.js 的 API_BASE='.' 把 /api/v1 拼成相对路径而 404。
+async function callHostApi(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<any> {
+  const hostUrl = await (globalThis as any).songloft.plugin.getHostUrl()
+  const token = await (globalThis as any).songloft.plugin.getToken()
+  const res = await fetch(`${hostUrl}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) {
+    throw new Error(
+      `Host API ${method} ${path} failed: ${await res.text()}`,
+    )
+  }
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
+}
+
 const router = createRouter()
 
 // 获取配置
@@ -291,23 +323,41 @@ router.get('/api/lyric', async (req: HTTPRequest) => {
 })
 
 // 扁平搜索（供插件自有页面使用）
+// type=song（默认）：返回歌曲数组，供页面渲染歌曲行。
+// type=playlist/album：返回歌单/专辑数组，供页面渲染卡片网格。
+// 注意：主程序全局搜索 (POST /api/search) 仍只返回单曲，此处分支仅服务于页面层。
 router.get('/search', async (req: HTTPRequest) => {
   const config = await getConfig()
   const q = parseQuery(req.query)
   const keyword = q.q || ''
+  const type = q.type === 'playlist' || q.type === 'album' ? q.type : 'song'
   if (!keyword) return jsonResponse([])
   try {
-    const songs = await searchSongs(keyword, config, 1, 50)
+    if (type === 'song') {
+      const songs = await searchSongs(keyword, config, 1, 50)
+      return jsonResponse(
+        songs.map((s) => ({
+          id: s.id,
+          name: s.name,
+          artist: s.artist,
+          album: s.album,
+          cover: s.cover,
+          source: s.source,
+          duration: s.duration,
+          extra: s.extra,
+        })),
+      )
+    }
+    const collections = await searchCollections(keyword, config, type, 1, 50)
     return jsonResponse(
-      songs.map((s) => ({
-        id: s.id,
-        name: s.name,
-        artist: s.artist,
-        album: s.album,
-        cover: s.cover,
-        source: s.source,
-        duration: s.duration,
-        extra: s.extra,
+      collections.map((c) => ({
+        id: c.id,
+        source: c.source,
+        title: c.title,
+        cover: c.cover,
+        creator: c.creator,
+        count: c.count,
+        contentType: c.contentType,
       })),
     )
   } catch (e) {
@@ -350,6 +400,46 @@ router.post('/import', async (req: HTTPRequest) => {
       { error: String((e as Error)?.message || e) },
       500,
     )
+  }
+})
+
+// 宿主歌单代理（前端经插件后端调用，规避相对路径 404）。
+// 列表走 HTTP /api/v1/playlists：本宿主运行时未桥接 SDK 的 songloft.playlists
+// 命名空间（直接调用会 500），故用 host url 转发。
+// 前端会带 ?_t=Date.now() 防缓存，这里把 query 透传到宿主 URL，破除宿主侧 HTTP 缓存。
+// 关键：宿主默认 limit=20 会分页截断（total 可能更大），强制放大 limit 拉全量，
+// 否则列表里"后面的歌单不显示"。
+router.get('/playlists', async (req: HTTPRequest) => {
+  try {
+    const query = req.query ? `${req.query}&limit=1000` : 'limit=1000'
+    const result = await callHostApi('GET', `/api/v1/playlists?${query}`)
+    return jsonResponse(result)
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
+  }
+})
+
+router.post('/playlists', async (req: HTTPRequest) => {
+  try {
+    const data = parseBody(req)
+    const result = await callHostApi('POST', '/api/v1/playlists', data)
+    return jsonResponse(result)
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
+  }
+})
+
+router.post('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
+  try {
+    const data = parseBody(req)
+    const result = await callHostApi(
+      'POST',
+      `/api/v1/playlists/${params.id}/songs`,
+      data,
+    )
+    return jsonResponse(result)
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
   }
 })
 
