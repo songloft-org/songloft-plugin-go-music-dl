@@ -264,6 +264,56 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
   }
 })
 
+// 单首搜索端点（topone）：
+// 供 MIoT「智能音箱」插件的外部搜索源调用（相对路径 loopback，无需改 miot 代码）。
+// 契约兼容 OnlineSearcher：POST { keyword, hint?, quality? } → { code, msg, data }。
+// 返回解析型结果（不附直链），device 播放时宿主回源本插件 /api/music/url，
+// 避免临时 CDN 直链入库后失效。
+router.post('/api/search/topone', async (req: HTTPRequest) => {
+  const body = parseBody(req)
+  const keyword = String(body.keyword || '').trim()
+  if (!keyword) {
+    return jsonResponse({ code: 1, msg: 'empty keyword', data: null })
+  }
+  try {
+    const config = await getConfig()
+    const songs = await searchSongs(keyword, config, 1, 1)
+    if (!songs.length) {
+      return jsonResponse({ code: 1, msg: 'no result', data: null })
+    }
+    const s = songs[0]
+    return jsonResponse({
+      code: 0,
+      msg: 'ok',
+      data: {
+        title: s.name,
+        artist: s.artist || '',
+        album: s.album || '',
+        duration: s.duration || 0,
+        cover_url: s.cover || '',
+        plugin_entry_path: 'go-music-dl',
+        source_data: JSON.stringify({
+          id: s.id,
+          source: s.source,
+          name: s.name,
+          artist: s.artist,
+          album: s.album,
+          duration: s.duration,
+          cover: s.cover,
+          extra: s.extra,
+        }),
+        dedup_key: `go-music-dl_${s.source}_${s.id}`,
+      },
+    })
+  } catch (e) {
+    return jsonResponse({
+      code: 1,
+      msg: String((e as Error)?.message || e),
+      data: null,
+    })
+  }
+})
+
 // 歌词提供者端点：宿主在歌曲无歌词时调用 GET /lyric-search?title=&artist=&album=&duration=
 router.get('/lyric-search', async (req: HTTPRequest) => {
   const config = await getConfig()
