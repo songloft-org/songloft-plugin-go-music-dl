@@ -3230,3 +3230,50 @@
 .songs-back-btn:hover { background: rgba(0,0,0,.06); }
 .songs-back-btn:active { background: rgba(0,0,0,.12); }
 
+/* 搜索分页：摘要 + 翻页条，对齐 go-music-dl 网页端 */
+.page-summary {
+    padding: 10px 4px 2px;
+    font-size: 13px;
+    color: var(--md-outline);
+}
+.page-summary .count {
+    color: var(--md-primary);
+    font-weight: 600;
+    margin: 0 2px;
+}
+.pagination-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 14px 0 6px;
+}
+.pagination-bar .ctrl-btn {
+    background: var(--md-surface-1);
+    color: var(--md-primary);
+    border: 1.5px solid var(--md-outline-variant);
+    border-radius: 999px;
+    padding: 7px 16px;
+    font-size: 13px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background .15s, border-color .15s;
+}
+.pagination-bar .ctrl-btn.primary:hover:not(:disabled) {
+    background: var(--md-primary-container);
+    border-color: var(--md-primary);
+    color: var(--md-on-primary-container);
+}
+.pagination-bar .ctrl-btn:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+.pagination-bar .pagination-text {
+    font-size: 13px;
+    color: var(--md-on-surface, #1d1d1d);
+    min-width: 96px;
+    text-align: center;
+}
+

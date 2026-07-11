@@ -12,36 +12,111 @@ import { renderSong, scheduleInspect } from './songlist.js'
 import { parsePlaylists, renderPlaylistRow } from './playlists.js'
 import { setSelectMode } from './imports.js'
 
-export async function doSearch() {
-  const q = document.getElementById('searchInput').value.trim()
+export async function doSearch(page = 1) {
+  // 防御：点击搜索按钮时浏览器会传入 event 对象作为首个参数，需归一化回数字
+  if (typeof page !== 'number' || isNaN(page) || page < 1) page = 1
+  // 首页搜索（page=1）读输入框；翻页时复用上次关键词与类型，避免输入框被改动影响
+  let q
+  let type
+  if (page <= 1) {
+    q = document.getElementById('searchInput').value.trim()
+    type = store.currentSearchType
+    store.lastSearchKeyword = q
+    store.lastSearchType = type
+  } else {
+    q = store.lastSearchKeyword
+    type = store.lastSearchType
+  }
   if (!q) return
   const list = document.getElementById('browserList')
   list.innerHTML = '<div class="empty-state">搜索中...</div>'
+  hideSearchPagination()
   document.getElementById('recommendCard').style.display = 'none'
   document.getElementById('listCard').style.display = 'block'
   try {
-    const data = await API.search(q, store.currentSearchType)
-    if (!Array.isArray(data) || data.length === 0) {
+    const data = await API.search(q, type, page)
+    // 兼容旧结构（数组）与新结构（{ type, items, pagination }）
+    const items = Array.isArray(data) ? data : data && data.items ? data.items : []
+    const pagination = Array.isArray(data) ? null : data && data.pagination
+    if (!items.length) {
       list.innerHTML = '<div class="empty-state">未找到结果</div>'
       return
     }
-    if (store.currentSearchType === 'song') {
-      store.queue = data
+    if (type === 'song') {
+      store.queue = items
       list.innerHTML = ''
-      data.forEach((s, i) => list.appendChild(renderSong(s, i)))
+      const start = pagination ? pagination.pageStart : 1
+      items.forEach((s, i) => list.appendChild(renderSong(s, i, { startIndex: start })))
       scheduleInspect(list)
     } else {
       // 歌单 / 专辑：渲染卡片网格
       const grid = document.createElement('div')
       grid.className = 'playlist-grid'
       grid.style.paddingTop = '4px'
-      data.forEach((pl) => grid.appendChild(renderPlaylistRow(pl)))
+      items.forEach((pl) => grid.appendChild(renderPlaylistRow(pl)))
       list.innerHTML = ''
       list.appendChild(grid)
     }
+    renderSearchPagination(pagination, type)
+    // 翻页后滚动回结果区顶部，避免停留在上一页底部
+    if (page > 1) list.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (e) {
     list.innerHTML = `<div class="empty-state">搜索失败：${escapeHtml(friendlyError(e, '搜索失败'))}</div>`
   }
+}
+
+// 隐藏搜索分页摘要与翻页条
+function hideSearchPagination() {
+  const summary = document.getElementById('searchSummary')
+  const pager = document.getElementById('searchPager')
+  if (summary) summary.style.display = 'none'
+  if (pager) pager.style.display = 'none'
+}
+
+// 渲染搜索分页摘要 + 翻页条，对齐 go-music-dl 网页端
+function renderSearchPagination(p, type) {
+  const summary = document.getElementById('searchSummary')
+  const pager = document.getElementById('searchPager')
+  if (!summary || !pager) return
+  if (!p || !p.total) {
+    hideSearchPagination()
+    return
+  }
+  store.searchPage = p.page
+  store.searchTotalPages = p.totalPages
+  const noun = type === 'album' ? '张专辑' : type === 'playlist' ? '个歌单' : '首歌曲'
+  summary.innerHTML =
+    `找到 <span class="count">${p.total}</span> ${noun}` +
+    ` · 当前第 ${p.page} / ${p.totalPages} 页，显示 ${p.pageStart} - ${p.pageEnd} / ${p.total}`
+  summary.style.display = 'block'
+
+  if (p.totalPages <= 1) {
+    pager.style.display = 'none'
+    return
+  }
+  pager.innerHTML = ''
+  const prev = document.createElement('button')
+  prev.type = 'button'
+  prev.className = 'ctrl-btn primary'
+  prev.innerHTML = '‹ 上一页'
+  prev.disabled = p.page <= 1
+  prev.onclick = () => doSearch(p.page - 1)
+
+  const text = document.createElement('span')
+  text.className = 'pagination-text'
+  text.textContent = `第 ${p.page} / ${p.totalPages} 页`
+
+  const next = document.createElement('button')
+  next.type = 'button'
+  next.className = 'ctrl-btn primary'
+  next.innerHTML = '下一页 ›'
+  next.disabled = p.page >= p.totalPages
+  next.onclick = () => doSearch(p.page + 1)
+
+  pager.appendChild(prev)
+  pager.appendChild(text)
+  pager.appendChild(next)
+  pager.style.display = 'flex'
 }
 
 // 首页：加载 go-music-dl 的每日推荐歌单（/recommend，与我的歌单同结构，parsePlaylists 可直接复用）

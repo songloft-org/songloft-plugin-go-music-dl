@@ -51,6 +51,7 @@
         }
         html, body { background: var(--md-surface-1); color: var(--md-on-surface); }
         .song-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--md-outline-variant, #e0e0e0); }
+        .song-index { flex: 0 0 auto; width: 26px; text-align: right; font-size: 13px; color: var(--md-on-surface-variant, #888); font-variant-numeric: tabular-nums; }
         .song-cover { width: 44px; height: 44px; border-radius: 8px; object-fit: cover; flex: 0 0 auto; }
         .song-meta { flex: 1; min-width: 0; }
         .song-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -209,9 +210,11 @@
                         <button class="btn-text" id="batchToggleBtn" type="button">多选</button>
                     </div>
                 </div>
+                <div id="searchSummary" class="page-summary" style="display:none;"></div>
                 <div class="card-body" id="browserList" style="padding-top:0">
                     <div class="empty-state">请输入关键词搜索歌曲</div>
                 </div>
+                <div id="searchPager" class="pagination-bar" style="display:none;"></div>
             </div>
         </div>
     </div>
@@ -281,12 +284,12 @@
         <header class="songs-overlay-bar">
             <button class="songs-back-btn" id="backToPlaylistsBtn">← 返回</button>
             <h1 id="mySongsTitle">歌单歌曲</h1>
-            <button class="btn-filled" id="importCollectionBtn" style="margin-left:auto;">导入为歌单</button>
         </header>
         <div class="container" style="padding-bottom:150px;">
             <div class="card" style="margin-top:12px;">
                 <div class="card-body" id="mySongsList"><div class="empty-state">加载中…</div></div>
             </div>
+            <div id="collectionPager" class="pagination-bar" style="display:none;"></div>
         </div>
     </div>
 

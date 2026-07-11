@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initTabs()
   initPlayer()
   loadConfig().then(() => showBrowserHome())
-  document.getElementById('searchBtn').onclick = doSearch
+  document.getElementById('searchBtn').onclick = () => doSearch()
   document
     .getElementById('searchInput')
     .addEventListener('keydown', (e) => {

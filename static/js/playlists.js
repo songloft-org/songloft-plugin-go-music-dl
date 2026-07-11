@@ -9,7 +9,6 @@ import {
 import { escapeHtml } from './util.js'
 import { normalizeBaseUrl, gmdFetch, isNetworkError, buildCoverUrl } from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
-import { importCollectionAsPlaylist } from './imports.js'
 
 // 解析 /music/user_playlists 返回的 HTML：
 // 优先读卡片内「导入本地」按钮的 data-external-id / data-source（显式属性，无 & 转义问题）；
@@ -119,6 +118,25 @@ export function parsePlaylistSongs(html) {
     })
   })
   return out
+}
+
+// 解析歌单/专辑详情页 HTML 中的分页摘要（与 go-music-dl 网页端 page-summary 格式一致）：
+// 「当前第 {page} / {totalPages} 页，显示 {pageStart} - {pageEnd} / {total}」
+export function parsePagination(html) {
+  const m = html.match(
+    /当前第\s*(\d+)\s*\/\s*(\d+)\s*页，显示\s*(\d+)\s*-\s*(\d+)\s*\/\s*(\d+)/,
+  )
+  if (m) {
+    return {
+      page: Number(m[1]) || 1,
+      totalPages: Number(m[2]) || 1,
+      pageStart: Number(m[3]) || 0,
+      pageEnd: Number(m[4]) || 0,
+      total: Number(m[5]) || 0,
+    }
+  }
+  // 摘要未渲染（单页歌单，renderIndex 在 totalPages=1 时不输出 page-summary）
+  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0 }
 }
 
 export function renderPlaylistRow(pl) {
@@ -247,18 +265,20 @@ export async function loadUserPlaylists() {
 // endpoint: 'playlist' | 'album'（go-music-dl 两接口同参：id/source）。
 // showImport: 是否开放逐首「导入到库」。为保持一致性，搜索单曲、专辑详情、歌单详情均开放。
 // 来源可能是「我的歌单」页或「搜索」页，返回时需回到对应视图（见 backToPlaylists）。
-export async function openCollection(pl, endpoint, showImport) {
+// 当前歌单/专辑详情上下文，供翻页按钮复用（翻页时不再依赖参数层层传递）
+let currentCollection = null
+
+export async function openCollection(pl, endpoint, showImport, page = 1) {
   store.songsBackToMyList = !!document
     .getElementById('tab-mylist')
     .classList.contains('active')
+  currentCollection = { pl, endpoint, showImport }
   document.getElementById('myPlaylistView').style.display = 'none'
   document.getElementById('mySongsView').style.display = 'block'
   document.getElementById('mySongsTitle').textContent =
     pl.title || (endpoint === 'album' ? '专辑歌曲' : '歌单歌曲')
-  // 歌单/专辑详情页一键导入为 Songloft 歌单：复用当前详情页的歌曲队列
-  const importBtn = document.getElementById('importCollectionBtn')
-  if (importBtn) importBtn.onclick = () => importCollectionAsPlaylist(pl, store.queue)
   const listEl = document.getElementById('mySongsList')
+  hideCollectionPager()
   listEl.innerHTML = '<div class="empty-state">加载中…</div>'
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) {
@@ -266,7 +286,11 @@ export async function openCollection(pl, endpoint, showImport) {
     return
   }
   try {
-    const url = `${base}/${endpoint}?id=${encodeURIComponent(pl.id)}&source=${encodeURIComponent(pl.source)}`
+    // 歌单/专辑详情页同样按 go-music-dl 的 WebPageSize（默认 30）分页，只传 page，
+    // 每页渲染约 30 首，避免一次渲染过多歌曲导致页面卡顿（与搜索页行为一致）。
+    const url =
+      `${base}/${endpoint}?id=${encodeURIComponent(pl.id)}` +
+      `&source=${encodeURIComponent(pl.source)}&page=${page}`
     const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (!res.ok) {
       listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
@@ -274,17 +298,75 @@ export async function openCollection(pl, endpoint, showImport) {
     }
     const html = await res.text()
     const songs = parsePlaylistSongs(html)
+    const pagination = parsePagination(html)
     if (!songs.length) {
       listEl.innerHTML = `<div class="empty-state">该${endpoint === 'album' ? '专辑' : '歌单'}暂无歌曲</div>`
       return
     }
     store.queue = songs
     listEl.innerHTML = ''
-    songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport })))
+    const start = pagination ? pagination.pageStart : 1
+    songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport, startIndex: start })))
     scheduleInspect(listEl)
+    renderCollectionPagination(pagination)
+    // 翻页后滚动回列表顶部，避免停留在上一页底部
+    if (page > 1) listEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (e) {
     listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
   }
+}
+
+// 隐藏歌单/专辑详情翻页条
+function hideCollectionPager() {
+  const pager = document.getElementById('collectionPager')
+  if (pager) pager.style.display = 'none'
+}
+
+// 渲染歌单/专辑详情翻页条（与搜索页分页 UI 一致），单页或解析失败时隐藏
+function renderCollectionPagination(p) {
+  const pager = document.getElementById('collectionPager')
+  if (!pager) return
+  if (!p || !p.total || p.totalPages <= 1) {
+    hideCollectionPager()
+    return
+  }
+  pager.innerHTML = ''
+  const prev = document.createElement('button')
+  prev.type = 'button'
+  prev.className = 'ctrl-btn primary'
+  prev.innerHTML = '‹ 上一页'
+  prev.disabled = p.page <= 1
+  prev.onclick = () =>
+    currentCollection &&
+    openCollection(
+      currentCollection.pl,
+      currentCollection.endpoint,
+      currentCollection.showImport,
+      p.page - 1,
+    )
+
+  const text = document.createElement('span')
+  text.className = 'pagination-text'
+  text.textContent = `第 ${p.page} / ${p.totalPages} 页`
+
+  const next = document.createElement('button')
+  next.type = 'button'
+  next.className = 'ctrl-btn primary'
+  next.innerHTML = '下一页 ›'
+  next.disabled = p.page >= p.totalPages
+  next.onclick = () =>
+    currentCollection &&
+    openCollection(
+      currentCollection.pl,
+      currentCollection.endpoint,
+      currentCollection.showImport,
+      p.page + 1,
+    )
+
+  pager.appendChild(prev)
+  pager.appendChild(text)
+  pager.appendChild(next)
+  pager.style.display = 'flex'
 }
 
 export async function openPlaylist(pl) {

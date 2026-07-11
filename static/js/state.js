@@ -60,6 +60,11 @@ export const store = {
   currentQuality: 'exhigh',
   // 搜索类型：单曲 / 歌单 / 专辑
   currentSearchType: 'song',
+  // 搜索分页上下文：翻页时复用上次的关键词与类型，避免受输入框后续改动影响
+  lastSearchKeyword: '',
+  lastSearchType: 'song',
+  searchPage: 1,
+  searchTotalPages: 1,
   // 推荐
   recommendLoaded: false,
   recommendPlaylists: [],

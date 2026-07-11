@@ -158,6 +158,9 @@ export function renderSong(s, index, opts = {}) {
   card.className = 'song-row'
   cardData.set(card, { song: s, index })
   const cover = buildCoverUrl(s.cover) || FALLBACK_COVER
+  // 排序序号：默认按页内位置从 1 开始；翻页场景由调用方传入 startIndex（= 当前页 pageStart），
+  // 使序号跨页连续（如第 2 页从 31 起），与 page-summary「显示 x - y / total」对齐。
+  const number = (opts.startIndex && opts.startIndex > 0 ? opts.startIndex : 1) + index
   const key = songKey(s)
   const sel = store.selectMode && store.selectedSongs.has(key)
   const checkHtml = store.selectMode
@@ -172,6 +175,7 @@ export function renderSong(s, index, opts = {}) {
     : ''
   card.innerHTML = `
     ${checkHtml}
+    <div class="song-index">${number}</div>
     <img src="${cover}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
     <div class="song-meta">
       <div class="song-title">${escapeHtml(s.name)}</div>

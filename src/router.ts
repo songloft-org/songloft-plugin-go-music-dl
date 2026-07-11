@@ -8,7 +8,8 @@ import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
 import { getConfig, saveConfig, GoMusicDlConfig } from './config'
 import {
   searchSongs,
-  searchCollections,
+  searchSongsPage,
+  searchCollectionsPage,
   buildDownloadUrl,
   fetchLyric,
   GoSong,
@@ -372,21 +373,33 @@ router.get('/api/lyric', async (req: HTTPRequest) => {
   }
 })
 
-// 扁平搜索（供插件自有页面使用）
-// type=song（默认）：返回歌曲数组，供页面渲染歌曲行。
-// type=playlist/album：返回歌单/专辑数组，供页面渲染卡片网格。
+// 扁平搜索（供插件自有页面使用），带分页，对齐 go-music-dl 网页端。
+// type=song（默认）：返回歌曲；type=playlist/album：返回歌单/专辑卡片。
+// 返回结构：{ type, items, pagination }，每页条数由 go-music-dl 的 WebPageSize 决定，
+// page 用于翻页（?page=N）。
 // 注意：主程序全局搜索 (POST /api/search) 仍只返回单曲，此处分支仅服务于页面层。
 router.get('/search', async (req: HTTPRequest) => {
   const config = await getConfig()
   const q = parseQuery(req.query)
   const keyword = q.q || ''
   const type = q.type === 'playlist' || q.type === 'album' ? q.type : 'song'
-  if (!keyword) return jsonResponse([])
+  const page = Math.max(1, parseInt(String(q.page || '1'), 10) || 1)
+  const emptyPagination = {
+    page: 1,
+    totalPages: 1,
+    total: 0,
+    pageStart: 0,
+    pageEnd: 0,
+  }
+  if (!keyword) {
+    return jsonResponse({ type, items: [], pagination: emptyPagination })
+  }
   try {
     if (type === 'song') {
-      const songs = await searchSongs(keyword, config, 1, 50)
-      return jsonResponse(
-        songs.map((s) => ({
+      const { items, pagination } = await searchSongsPage(keyword, config, page)
+      return jsonResponse({
+        type,
+        items: items.map((s) => ({
           id: s.id,
           name: s.name,
           artist: s.artist,
@@ -396,11 +409,18 @@ router.get('/search', async (req: HTTPRequest) => {
           duration: s.duration,
           extra: s.extra,
         })),
-      )
+        pagination,
+      })
     }
-    const collections = await searchCollections(keyword, config, type, 1, 50)
-    return jsonResponse(
-      collections.map((c) => ({
+    const { items, pagination } = await searchCollectionsPage(
+      keyword,
+      config,
+      type,
+      page,
+    )
+    return jsonResponse({
+      type,
+      items: items.map((c) => ({
         id: c.id,
         source: c.source,
         title: c.title,
@@ -409,7 +429,8 @@ router.get('/search', async (req: HTTPRequest) => {
         count: c.count,
         contentType: c.contentType,
       })),
-    )
+      pagination,
+    })
   } catch (e) {
     return jsonResponse(
       { error: String((e as Error)?.message || e) },

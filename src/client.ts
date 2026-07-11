@@ -115,8 +115,13 @@ async function fetchSearchHtml(
     `q=${encodeURIComponent(keyword)}`,
     `type=${type}`,
     `page=${page}`,
-    `count=${pageSize}`,
   ]
+  // go-music-dl 认的是 page_size（不是 count）。仅当显式给定正数时才传，
+  // 传 0 则不带该参数，让服务端使用其 WebPageSize 设置（默认 30），
+  // 使插件搜索页每页条数与 go-music-dl 网页端保持一致。
+  if (pageSize > 0) {
+    params.push(`page_size=${pageSize}`)
+  }
   for (const s of sources) {
     params.push(`sources=${encodeURIComponent(s)}`)
   }
@@ -132,6 +137,57 @@ export async function searchSongs(
 ): Promise<GoSong[]> {
   const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize)
   return parseSongCards(html)
+}
+
+/**
+ * 分页元信息，对齐 go-music-dl 网页端的分页摘要。
+ * 从返回 HTML 的 page-summary 文本中解析（歌曲/歌单/专辑模板格式一致）：
+ *   「当前第 {page} / {totalPages} 页，显示 {pageStart} - {pageEnd} / {total}」
+ */
+export interface Pagination {
+  page: number
+  totalPages: number
+  total: number
+  pageStart: number
+  pageEnd: number
+}
+
+export function parsePagination(html: string): Pagination {
+  const m = html.match(
+    /当前第\s*(\d+)\s*\/\s*(\d+)\s*页，显示\s*(\d+)\s*-\s*(\d+)\s*\/\s*(\d+)/,
+  )
+  if (m) {
+    return {
+      page: Number(m[1]) || 1,
+      totalPages: Number(m[2]) || 1,
+      pageStart: Number(m[3]) || 0,
+      pageEnd: Number(m[4]) || 0,
+      total: Number(m[5]) || 0,
+    }
+  }
+  // 无 page-summary（结果为空，或只有一页且模板未渲染摘要）时的兜底
+  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0 }
+}
+
+/**
+ * 分页搜索歌曲：pageSize 传 0，让 go-music-dl 用其 WebPageSize 决定每页条数，
+ * 仅用 page 翻页。返回歌曲列表与分页元信息。
+ */
+export async function searchSongsPage(
+  keyword: string,
+  config: GoMusicDlConfig,
+  page = 1,
+): Promise<{ items: GoSong[]; pagination: Pagination }> {
+  const html = await fetchSearchHtml(keyword, config, 'song', page, 0)
+  const items = parseSongCards(html)
+  const pagination = parsePagination(html)
+  // 摘要缺失时用当前页实际条数兜底，避免前端显示 0
+  if (pagination.total === 0 && items.length > 0) {
+    pagination.total = items.length
+    pagination.pageStart = 1
+    pagination.pageEnd = items.length
+  }
+  return { items, pagination }
 }
 
 export interface GoCollection {
@@ -181,6 +237,27 @@ export async function searchCollections(
 ): Promise<GoCollection[]> {
   const html = await fetchSearchHtml(keyword, config, type, page, pageSize)
   return parsePlaylistCards(html)
+}
+
+/**
+ * 分页搜索歌单/专辑：pageSize 传 0，跟随 go-music-dl 的 WebPageSize。
+ * 返回卡片列表与分页元信息。
+ */
+export async function searchCollectionsPage(
+  keyword: string,
+  config: GoMusicDlConfig,
+  type: 'playlist' | 'album',
+  page = 1,
+): Promise<{ items: GoCollection[]; pagination: Pagination }> {
+  const html = await fetchSearchHtml(keyword, config, type, page, 0)
+  const items = parsePlaylistCards(html)
+  const pagination = parsePagination(html)
+  if (pagination.total === 0 && items.length > 0) {
+    pagination.total = items.length
+    pagination.pageStart = 1
+    pagination.pageEnd = items.length
+  }
+  return { items, pagination }
 }
 
 /**

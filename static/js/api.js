@@ -60,11 +60,11 @@ export const API = {
   config: () => fetchAuth('./config'),
   saveConfig: (cfg) =>
     fetchAuth('./config', { method: 'POST', body: JSON.stringify(cfg) }),
-  search: (q, type) =>
+  search: (q, type, page = 1) =>
     fetchAuth(
       `./search?q=${encodeURIComponent(q)}${
         type ? `&type=${encodeURIComponent(type)}` : ''
-      }`,
+      }&page=${page}`,
     ),
   import: (item) =>
     fetchAuth('./import', {
