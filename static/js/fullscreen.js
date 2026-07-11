@@ -1,6 +1,6 @@
 // fullscreen.js — 全屏播放器控制
 import { store } from './state.js'
-import { refreshQualityControl, syncProgress, getAudio } from './player.js'
+import { syncProgress, getAudio } from './player.js'
 
 export function openFullscreenPlayer() {
   const el = document.getElementById('fullscreenPlayer')
@@ -9,7 +9,6 @@ export function openFullscreenPlayer() {
   el.classList.add('open')
   document.body.style.overflow = 'hidden'
   const cur = store.queue[store.currentIndex]
-  if (cur) refreshQualityControl(cur)
   syncProgress()
 }
 

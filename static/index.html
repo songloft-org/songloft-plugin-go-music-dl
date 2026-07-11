@@ -62,6 +62,7 @@
         .song-tags { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
         .song-status { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; }
         .song-bitrate { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; font-weight: 600; background: rgba(99,102,241,.12); color: var(--md-primary, #5b5fc7); }
+        .gmd-pb-bitrate { display: inline-block; margin-right: 6px; font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 600; line-height: 1.6; background: rgba(99,102,241,.12); color: var(--md-primary, #5b5fc7); min-width: 0; }
         .song-status.status-pending { background: rgba(0,0,0,.06); color: #888; }
         .song-status.status-checking { background: rgba(99,102,241,.12); color: #5b5fc7; }
         .song-status.status-ok { background: rgba(76,175,80,.15); color: #2e7d32; }
@@ -122,27 +123,6 @@
         .batch-count { font-size: 13px; color: var(--md-on-surface-variant, #666); }
         .batch-actions { display: flex; gap: 8px; align-items: center; }
         [data-theme="dark"] .batch-bar { background: var(--md-surface, #1b1b1f); }
-        /* 底部迷你播放条音质切换 */
-        .quality-select {
-            flex: 0 0 auto;
-            height: 34px;
-            padding: 0 10px;
-            font-size: 12px;
-            font-weight: 500;
-            line-height: 1;
-            border-radius: 17px;
-            background: var(--md-surface-2, #efeff4);
-            color: var(--md-on-surface, #1f1f1f);
-            border: 1px solid var(--md-outline-variant, #e0e0e0);
-            cursor: pointer;
-            -webkit-appearance: none;
-            appearance: none;
-        }
-        .quality-select:focus { outline: 2px solid var(--md-primary, #6750a4); outline-offset: 1px; }
-        .quality-select:disabled { opacity: .45; cursor: default; }
-        @media (max-width: 480px) {
-            .quality-select { height: 30px; padding: 0 6px; font-size: 11px; }
-        }
     </style>
     <script>
       // 主题联动：响应宿主 postMessage('songloft-theme') 与 document 上的 data-theme，
@@ -389,7 +369,7 @@
     <audio id="audio" preload="none"></audio>
 
     <!-- 底部迷你播放条：常驻显示，点歌曲即播放；点此条展开全屏播放器 -->
-    <div class="gmd-miniplayer" id="playerBar">
+    <div class="gmd-miniplayer" id="playerBar" style="display:none;">
         <div class="gmd-pb-click" onclick="openFullscreenPlayer()">
             <img class="gmd-pb-cover" id="pbCover" alt="Go Music DL" src="static/icon.svg" referrerpolicy="no-referrer">
             <div class="gmd-pb-meta">
@@ -408,12 +388,7 @@
             </div>
             <span class="progress-time" id="pbTotal">0:00</span>
         </div>
-        <select class="quality-select" id="pbQualitySelect" title="音质（仅网易云可切换）">
-            <option value="standard">标准</option>
-            <option value="exhigh">高品质</option>
-            <option value="lossless">无损</option>
-            <option value="hires">Hi-Res</option>
-        </select>
+        <span class="gmd-pb-bitrate" id="pbBitrate" title="当前播放音质（自动识别）"></span>
     </div>
 
     <!-- 全屏播放器 -->

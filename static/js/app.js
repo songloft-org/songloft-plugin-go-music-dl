@@ -9,7 +9,6 @@ import {
   togglePlay,
   prevSong,
   startAudio,
-  applyQualityChange,
 } from './player.js'
 import {
   openFullscreenPlayer,
@@ -128,12 +127,6 @@ function initPlayer() {
   document.getElementById('fpPrevBtn').onclick = prevSong
   document.getElementById('fpNextBtn').onclick = nextSong
   document.getElementById('fpLyricToggle').onclick = toggleLyricPage
-  // 底部播放条音质切换（仅网易云生效）：切换后重载当前歌曲直链
-  const pbQualitySel = document.getElementById('pbQualitySelect')
-  if (pbQualitySel) pbQualitySel.onchange = () => {
-    store.currentQuality = pbQualitySel.value
-    applyQualityChange()
-  }
 
   bindSeek('pbTrack')
   bindSeek('fpProgressTrack')

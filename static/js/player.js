@@ -2,12 +2,11 @@
 import {
   store,
   effectiveQuality,
-  QUALITY_OPTIONS,
   FALLBACK_COVER,
   PLUGIN_ICON,
 } from './state.js'
-import { normalizeBaseUrl, buildCoverUrl } from './api.js'
-import { fmtTime, showSnackbar } from './util.js'
+import { normalizeBaseUrl, buildCoverUrl, gmdFetch } from './api.js'
+import { fmtTime, showSnackbar, formatBitrateBadge } from './util.js'
 import { loadLyrics, highlightLyric } from './lyrics.js'
 
 export function getAudio() {
@@ -70,6 +69,31 @@ export function syncProgress() {
   if (store.fpLyrics.length) highlightLyric(p)
 }
 
+// 查询 go-music-dl /inspect 拿当前歌曲实际比特率（网易云按当前音质档位透传 level），
+// 与列表卡片 inspect 同款逻辑，仅取 bitrate。用于播放条自动识别当前音质。
+async function fetchBitrate(song) {
+  const base = normalizeBaseUrl(store.config.baseUrl)
+  if (!base) return ''
+  const extra = { ...(song.extra || {}) }
+  if (song.source === 'netease') extra.level = effectiveQuality()
+  const p = new URLSearchParams({
+    id: song.id,
+    source: song.source,
+    duration: song.duration || 0,
+    extra: JSON.stringify(extra),
+  })
+  try {
+    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    if (!res.ok) return ''
+    const j = await res.json()
+    return (j && j.bitrate) || ''
+  } catch {
+    return ''
+  }
+}
+
 export function updateNowPlaying(song, cover) {
   document.getElementById('pbTitle').textContent = song.name || '未知歌曲'
   document.getElementById('pbArtist').textContent = song.artist || '-'
@@ -101,6 +125,11 @@ export function updateNowPlaying(song, cover) {
   syncProgress()
   loadLyrics(song)
   highlightCurrentInList()
+  // 自动识别当前歌曲实际比特率：异步查询，不阻塞播放；切音质后也会随 startAudio 重新触发
+  fetchBitrate(song).then((br) => {
+    const el = document.getElementById('pbBitrate')
+    if (el) el.textContent = formatBitrateBadge(br)
+  })
 }
 
 export function playSong(song, index) {
@@ -119,39 +148,8 @@ export function startAudio(song, retry) {
   audio.src = url
   audio.load()
   updateNowPlaying(song, song.cover || '')
-  refreshQualityControl(song)
   document.getElementById('playerBar').style.display = 'flex'
   audio.play().catch(() => {})
-}
-
-// 根据当前歌曲刷新底部播放条的音质选择器：网易云可切换，其他音源禁用
-export function refreshQualityControl(song) {
-  const sel = document.getElementById('pbQualitySelect')
-  if (!sel) return
-  sel.value = effectiveQuality()
-  const netease = !!(song && song.source === 'netease')
-  sel.disabled = !netease
-  sel.title = netease
-    ? '音质（仅网易云可切换）'
-    : '当前音源不支持切换音质（仅网易云支持）'
-}
-
-// 用户切换音质后，重新加载当前歌曲（保留播放进度）。无正在播放的歌曲则忽略。
-export function applyQualityChange() {
-  const song = store.queue[store.currentIndex]
-  if (!song) return
-  const audio = getAudio()
-  const t = audio.currentTime || 0
-  const wasPlaying = !audio.paused
-  startAudio(song)
-  const onMeta = () => {
-    try { audio.currentTime = t } catch (e) {}
-    if (wasPlaying) audio.play().catch(() => {})
-    audio.removeEventListener('loadedmetadata', onMeta)
-  }
-  audio.addEventListener('loadedmetadata', onMeta)
-  const label = (QUALITY_OPTIONS.find((q) => q.value === store.currentQuality) || {}).label || store.currentQuality
-  showSnackbar(`音质已切换为 ${label}`)
 }
 
 export function togglePlay() {
@@ -170,6 +168,9 @@ export function stopPlay() {
   // 停止后无歌曲播放，迷你播放条封面回退到插件图标
   const pbCover = document.getElementById('pbCover')
   if (pbCover) { pbCover.onerror = null; pbCover.src = PLUGIN_ICON }
+  // 对齐主程序：无歌曲时收起播放条，不显示空条
+  const pb = document.getElementById('playerBar')
+  if (pb) pb.style.display = 'none'
 }
 
 export function playQueue(i) {
