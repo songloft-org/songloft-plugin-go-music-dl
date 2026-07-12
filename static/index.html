@@ -172,7 +172,6 @@
             <div class="card" id="recommendCard" style="margin-top:16px;">
                 <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
                     <span>每日推荐歌单</span>
-                    <button class="btn-text" id="refreshRecommendBtn">刷新</button>
                 </div>
                 <div class="card-body">
                     <div class="mylist-cats" id="recommendCats"></div>
@@ -214,7 +213,6 @@
                 <div class="card" style="margin-top:16px;">
                     <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
                         <span>每日推荐歌单</span>
-                        <button class="btn-text" id="refreshDiscoverRecommendBtn">刷新</button>
                     </div>
                     <div class="card-body">
                         <div id="discoverRecommendList" class="playlist-grid" style="padding-top:0"><div class="empty-state">加载中…</div></div>
@@ -247,12 +245,11 @@
                 <div class="card">
                     <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
                         <span>我的歌单</span>
-                        <button class="btn-text" id="refreshMyListBtn">刷新</button>
                     </div>
                     <div class="card-body">
                         <div class="card-desc" style="margin-bottom:10px;">显示已登录平台中你创建和收藏的歌单。点击下方分类可只看对应平台的歌单。</div>
                         <div class="mylist-cats" id="myPlaylistCats"></div>
-                        <div id="myPlaylistList" class="playlist-grid"><div class="empty-state">点击「刷新」加载歌单</div></div>
+                        <div id="myPlaylistList" class="playlist-grid"><div class="empty-state">加载中…</div></div>
                     </div>
                 </div>
             </div>
@@ -369,12 +366,18 @@
     <audio id="audio" preload="none"></audio>
 
     <!-- 底部迷你播放条：常驻显示，点歌曲即播放；点此条展开全屏播放器 -->
-    <div class="gmd-miniplayer" id="playerBar" style="display:none;">
+    <div class="gmd-miniplayer" id="playerBar">
         <div class="gmd-pb-click" onclick="openFullscreenPlayer()">
-            <img class="gmd-pb-cover" id="pbCover" alt="Go Music DL" src="static/icon.svg" referrerpolicy="no-referrer">
+            <div class="gmd-pb-cover-wrap" id="pbCoverWrap">
+                <img class="gmd-pb-cover" id="pbCover" alt="Go Music DL" referrerpolicy="no-referrer">
+                <span class="material-symbols-outlined gmd-pb-cover-placeholder">music_note</span>
+            </div>
             <div class="gmd-pb-meta">
-                <div class="gmd-pb-title" id="pbTitle">暂无播放</div>
-                <div class="gmd-pb-artist" id="pbArtist">-</div>
+                <div class="gmd-pb-line1">
+                    <span class="gmd-pb-title" id="pbTitle">暂无播放</span>
+                    <span class="gmd-pb-artist" id="pbArtist">-</span>
+                </div>
+                <div class="gmd-pb-lyric" id="pbLyric">暂无歌词</div>
             </div>
         </div>
         <button class="btn-icon" id="pbPlayBtn" title="播放/暂停">

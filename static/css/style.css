@@ -2850,17 +2850,57 @@
     flex: 0 1 auto;
 }
 
-.gmd-pb-cover {
+/* 封面容器：包住真实封面 img 与占位音符，靠 :has 二选一显示，对齐 miot 方案 */
+.gmd-pb-cover-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     width: 40px;
     height: 40px;
+    flex: 0 0 auto;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--md-surface-variant);
+}
+
+/* 真实封面默认隐藏，有合法 src 时才显示（覆盖占位音符） */
+.gmd-pb-cover {
+    width: 100%;
+    height: 100%;
     border-radius: 8px;
     object-fit: cover;
-    flex: 0 0 auto;
-    background: var(--md-surface-variant);
+    display: none;
+}
+.gmd-pb-cover-wrap:has(.gmd-pb-cover[src]):not(.gmd-pb-cover[src=""]) .gmd-pb-cover {
+    display: block;
+}
+
+/* 无封面占位音符（暂无播放 / 歌曲无封面时显示），有封面时隐藏 */
+.gmd-pb-cover-placeholder {
+    color: var(--md-on-surface-variant);
+    font-size: 20px;
+    font-variation-settings: 'FILL' 0;
+}
+.gmd-pb-cover-wrap:has(.gmd-pb-cover[src]):not(.gmd-pb-cover[src=""]) .gmd-pb-cover-placeholder {
+    display: none;
 }
 
 .gmd-pb-meta {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+}
+
+/* 第一行：歌名 + 歌手 同行，对齐 miot */
+.gmd-pb-line1 {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    max-width: 150px;
 }
 
 .gmd-pb-title {
@@ -2870,10 +2910,19 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 150px;
 }
 
 .gmd-pb-artist {
+    font-size: 12px;
+    color: var(--md-on-surface-variant);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+}
+
+/* 第二行：实时歌词，空闲显示「暂无歌词」，对齐 miot */
+.gmd-pb-lyric {
     font-size: 12px;
     color: var(--md-on-surface-variant);
     white-space: nowrap;

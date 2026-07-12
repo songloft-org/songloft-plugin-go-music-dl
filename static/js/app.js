@@ -178,22 +178,33 @@ document.addEventListener('DOMContentLoaded', () => {
     store.currentQuality = dq.value
     saveConfig()
   })
-  // 头部「刷新」：在搜索首页刷新推荐，否则执行搜索
+  // 头部「刷新」：按当前激活的 tab 刷新对应内容（统一入口，避免与卡片内刷新按钮重复）
   document.getElementById('refreshBtn').onclick = () => {
-    const browserTab = document.querySelector('.tab-item[data-tab="browser"]')
-    const isBrowser = browserTab && browserTab.classList.contains('active')
-    if (isBrowser && document.getElementById('recommendCard').style.display !== 'none') {
-      store.recommendLoaded = false
-      loadRecommend()
-    } else {
-      doSearch()
+    const activeTab = document.querySelector('.tab-item.active')
+    const tab = activeTab && activeTab.dataset.tab
+    if (tab === 'browser') {
+      if (document.getElementById('recommendCard').style.display !== 'none') {
+        store.recommendLoaded = false
+        loadRecommend()
+      } else if (document.getElementById('searchInput').value.trim()) {
+        // 搜索结果视图且搜索框有关键词：重新搜索
+        doSearch()
+      } else {
+        // 搜索结果视图但搜索框已清空：收起结果、回到推荐首页，避免点刷新无反应
+        // （showBrowserHome 在结果视图下会直接 return，故用 backToBrowserHome）
+        backToBrowserHome()
+      }
+    } else if (tab === 'discover') {
+      const subBtn = document.querySelector('#discoverSubSwitch .mylist-cat.active')
+      const isCategories = subBtn && subBtn.dataset.sub === 'categories'
+      if (isCategories) loadDiscoverCategories()
+      else loadDiscoverRecommend()
+    } else if (tab === 'mylist') {
+      loadUserPlaylists()
+    } else if (tab === 'config') {
+      loadConfig()
     }
   }
-  document.getElementById('refreshRecommendBtn').onclick = () => {
-    store.recommendLoaded = false
-    loadRecommend()
-  }
-  document.getElementById('refreshMyListBtn').onclick = loadUserPlaylists
   // 发现页：每日推荐 / 分类歌单 子切换
   const discoverSub = document.getElementById('discoverSubSwitch')
   if (discoverSub) {
@@ -215,11 +226,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     })
   }
-  const refreshDiscoverRecommendBtn = document.getElementById(
-    'refreshDiscoverRecommendBtn',
-  )
-  if (refreshDiscoverRecommendBtn)
-    refreshDiscoverRecommendBtn.onclick = loadDiscoverRecommend
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
   // 搜索结果页「返回首页」：回到每日推荐，无需刷新整页
   document.getElementById('backToHomeBtn').onclick = backToBrowserHome

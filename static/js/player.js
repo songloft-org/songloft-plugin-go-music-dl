@@ -3,10 +3,9 @@ import {
   store,
   effectiveQuality,
   FALLBACK_COVER,
-  PLUGIN_ICON,
 } from './state.js'
 import { normalizeBaseUrl, buildCoverUrl, gmdFetch } from './api.js'
-import { fmtTime, showSnackbar, formatBitrateBadge } from './util.js'
+import { fmtTime, formatBitrateBadge } from './util.js'
 import { loadLyrics, highlightLyric } from './lyrics.js'
 
 export function getAudio() {
@@ -103,7 +102,6 @@ export function updateNowPlaying(song, cover) {
   const pbCover = document.getElementById('pbCover')
   const fpCover = document.getElementById('fpCoverImg')
   const bg = document.getElementById('fpBgImage')
-  const placeholder = document.getElementById('fpCoverPlaceholder')
   const coverUrl = cover ? buildCoverUrl(cover) : ''
   if (coverUrl) {
     if (pbCover) {
@@ -116,8 +114,8 @@ export function updateNowPlaying(song, cover) {
     }
     if (bg) bg.style.backgroundImage = `url("${coverUrl}")`
   } else {
-    // 无封面：迷你播放条显示插件图标，全屏播放器仍用占位音符
-    if (pbCover) { pbCover.onerror = () => { pbCover.src = FALLBACK_COVER }; pbCover.src = PLUGIN_ICON }
+    // 无封面：迷你播放条与全屏播放器均显示占位音符（music_note）
+    if (pbCover) { pbCover.onerror = null; pbCover.removeAttribute('src') }
     if (fpCover) { fpCover.removeAttribute('src'); fpCover.onerror = null }
     if (bg) bg.style.backgroundImage = ''
   }
@@ -148,7 +146,6 @@ export function startAudio(song, retry) {
   audio.src = url
   audio.load()
   updateNowPlaying(song, song.cover || '')
-  document.getElementById('playerBar').style.display = 'flex'
   audio.play().catch(() => {})
 }
 
@@ -165,12 +162,16 @@ export function stopPlay() {
   audio.currentTime = 0
   setPlayIcon(false)
   syncProgress()
-  // 停止后无歌曲播放，迷你播放条封面回退到插件图标
+  // 停止后无歌曲播放：封面露出音符占位，标题/歌手/歌词回到「暂无播放 / - / 暂无歌词」，
+  // 迷你播放条保持常驻（不直接隐藏），让底部布局稳定、符合音乐 App 惯例。
   const pbCover = document.getElementById('pbCover')
-  if (pbCover) { pbCover.onerror = null; pbCover.src = PLUGIN_ICON }
-  // 对齐主程序：无歌曲时收起播放条，不显示空条
-  const pb = document.getElementById('playerBar')
-  if (pb) pb.style.display = 'none'
+  if (pbCover) { pbCover.onerror = null; pbCover.removeAttribute('src') }
+  const pbTitle = document.getElementById('pbTitle')
+  const pbArtist = document.getElementById('pbArtist')
+  const pbLyric = document.getElementById('pbLyric')
+  if (pbTitle) pbTitle.textContent = '暂无播放'
+  if (pbArtist) pbArtist.textContent = '-'
+  if (pbLyric) pbLyric.textContent = '暂无歌词'
 }
 
 export function playQueue(i) {

@@ -56,12 +56,21 @@ export function highlightLyric(t) {
     els[idx].classList.add('active')
     els[idx].scrollIntoView({ block: 'center', behavior: 'smooth' })
   }
+  // 同步迷你播放条歌词行（对齐 miot：播放时显示当前歌词）
+  const pbLyric = document.getElementById('pbLyric')
+  if (pbLyric) {
+    const text = idx >= 0 && store.fpLyrics[idx] ? store.fpLyrics[idx].text : ''
+    pbLyric.textContent = text ? text : '暂无歌词'
+  }
 }
 
 export function loadLyrics(song) {
   store.fpLyrics = []
   store.lastLyricIndex = -1
   renderLyrics([])
+  // 迷你条歌词行复位为「暂无歌词」，待歌词加载后由 highlightLyric 更新
+  const pbLyric = document.getElementById('pbLyric')
+  if (pbLyric) pbLyric.textContent = '暂无歌词'
   const p = new URLSearchParams({
     id: song.id,
     source: song.source,
