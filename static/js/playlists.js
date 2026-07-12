@@ -6,9 +6,16 @@ import {
   FALLBACK_COVER,
   PLUGIN_ICON,
 } from './state.js'
-import { escapeHtml } from './util.js'
-import { normalizeBaseUrl, gmdFetch, isNetworkError, buildCoverUrl } from './api.js'
+import { escapeHtml, showSnackbar } from './util.js'
+import {
+  normalizeBaseUrl,
+  gmdFetch,
+  isNetworkError,
+  buildCoverUrl,
+  friendlyError,
+} from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
+import { importCollectionAsPlaylist } from './imports.js'
 
 // 解析 /music/user_playlists 返回的 HTML：
 // 优先读卡片内「导入本地」按钮的 data-external-id / data-source（显式属性，无 & 转义问题）；
@@ -34,8 +41,14 @@ export function parsePlaylists(html) {
     const title = titleEl ? titleEl.textContent.trim() : ''
     const authorEl = card.querySelector('.playlist-author')
     const creator = authorEl ? authorEl.textContent.trim() : ''
+    // 数量可能不可信：go-music-dl 在「我的歌单」列表里 TrackCount 经常为 0，
+    // 其原生 UI 用「进入查看」回避（模板 {{ if gt .TrackCount 0 }}）。这里只提取
+    // 数字；无数字（如「进入查看」）或 0 都视为未知，由渲染层显示中性文案，
+    // 避免误导显示「共 0 首」。
     const countEl = card.querySelector('.playlist-count')
-    const count = countEl ? countEl.textContent.replace(/\D/g, '') : '0'
+    const countText = countEl ? countEl.textContent : ''
+    const countM = countText.match(/(\d+)/)
+    const count = countM ? countM[1] : ''
     const tagEl = card.querySelector('.tag')
     const tag = tagEl ? tagEl.textContent.trim() : source
     // 判定内容类型：优先取卡片内「导入本地」按钮的 data-content-type
@@ -152,7 +165,7 @@ export function renderPlaylistRow(pl) {
     </div>
     <div class="playlist-meta">
       <div class="playlist-title">${escapeHtml(pl.title)}</div>
-      <div class="playlist-sub">${escapeHtml(pl.creator) || '未知'} · 共 ${escapeHtml(pl.count)} 首</div>
+      <div class="playlist-sub">${escapeHtml(pl.creator) || '未知'} · ${pl.count && Number(pl.count) > 0 ? `共 ${escapeHtml(pl.count)} 首` : '进入查看'}</div>
     </div>`
   card.onclick = () => {
     if (pl.contentType === 'album') openAlbum(pl)
@@ -183,9 +196,13 @@ export function buildPlaylistCats() {
   present.forEach((s) => cats.push({ key: s, label: sourceLabel(s) || s }))
   bar.innerHTML = ''
   cats.forEach((c) => {
+    const count =
+      c.key === 'all'
+        ? store.allPlaylists.length
+        : store.allPlaylists.filter((p) => p.source === c.key).length
     const chip = document.createElement('button')
     chip.className = 'mylist-cat' + (c.key === store.currentCat ? ' active' : '')
-    chip.textContent = c.label
+    chip.textContent = `${c.label} · ${count}`
     chip.onclick = () => {
       store.currentCat = c.key
       buildPlaylistCats()
@@ -279,6 +296,7 @@ export async function openCollection(pl, endpoint, showImport, page = 1) {
     pl.title || (endpoint === 'album' ? '专辑歌曲' : '歌单歌曲')
   const listEl = document.getElementById('mySongsList')
   hideCollectionPager()
+  hideCollectionHeader()
   listEl.innerHTML = '<div class="empty-state">加载中…</div>'
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) {
@@ -299,6 +317,7 @@ export async function openCollection(pl, endpoint, showImport, page = 1) {
     const html = await res.text()
     const songs = parsePlaylistSongs(html)
     const pagination = parsePagination(html)
+    renderCollectionHeader(html)
     if (!songs.length) {
       listEl.innerHTML = `<div class="empty-state">该${endpoint === 'album' ? '专辑' : '歌单'}暂无歌曲</div>`
       return
@@ -320,6 +339,50 @@ export async function openCollection(pl, endpoint, showImport, page = 1) {
 function hideCollectionPager() {
   const pager = document.getElementById('collectionPager')
   if (pager) pager.style.display = 'none'
+}
+
+// 隐藏歌单/专辑详情头部摘要
+function hideCollectionHeader() {
+  const el = document.getElementById('mySongsSummary')
+  if (el) el.style.display = 'none'
+}
+
+// 渲染歌单/专辑详情头部摘要（对齐 go-music-dl 原生 .list-header）：
+// 「共 X 首」+「当前第 x / x 页，显示 x - x / x」。
+// 原生头部还含排序控件与导入按钮，那部分已由 overlay-bar 的「导入歌单」承担，
+// 此处只补充歌曲数量与分页摘要，避免标题重复。
+function renderCollectionHeader(html) {
+  const el = document.getElementById('mySongsSummary')
+  if (!el) return
+  const h = parseCollectionHeader(html)
+  if (!h) {
+    el.style.display = 'none'
+    return
+  }
+  const m = h.countText.match(/共\s*(\d+)\s*首/)
+  const lines = []
+  if (m) lines.push(`<div style="font-size:14px;font-weight:600;">共 ${m[1]} 首</div>`)
+  if (h.summaryText)
+    lines.push(`<div class="page-summary" style="padding-top:0;">${escapeHtml(h.summaryText)}</div>`)
+  if (!lines.length) {
+    el.style.display = 'none'
+    return
+  }
+  el.innerHTML = lines.join('')
+  el.style.display = 'block'
+}
+
+// 解析 /playlist、/album 返回的 .list-header（对齐 go-music-dl 原生 song_list 头部）：
+// result-count（共 X 首所在文本）+ page-summary（分页摘要）
+function parseCollectionHeader(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const header = doc.querySelector('.list-header')
+  if (!header) return null
+  const countEl = header.querySelector('.result-count')
+  const countText = countEl ? countEl.textContent.replace(/\s+/g, ' ').trim() : ''
+  const summaryEl = header.querySelector('.page-summary')
+  const summaryText = summaryEl ? summaryEl.textContent.replace(/\s+/g, ' ').trim() : ''
+  return { countText, summaryText }
 }
 
 // 渲染歌单/专辑详情翻页条（与搜索页分页 UI 一致），单页或解析失败时隐藏
@@ -381,5 +444,55 @@ export function backToPlaylists() {
   document.getElementById('mySongsView').style.display = 'none'
   if (store.songsBackToMyList) {
     document.getElementById('myPlaylistView').style.display = 'block'
+  }
+}
+
+// 抓取歌单/专辑的全部歌曲（跨分页，最多 100 页防异常死循环），
+// 复用详情页同款解析逻辑，供「整张导入」入口一次性拿到全量 songs。
+async function loadAllCollectionSongs(pl, endpoint) {
+  const base = normalizeBaseUrl(store.config.baseUrl)
+  if (!base) return []
+  const all = []
+  let page = 1
+  for (let guard = 0; guard < 100; guard++) {
+    const url =
+      `${base}/${endpoint}?id=${encodeURIComponent(pl.id)}` +
+      `&source=${encodeURIComponent(pl.source)}&page=${page}`
+    let html
+    try {
+      const res = await gmdFetch(url, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      })
+      if (!res.ok) break
+      html = await res.text()
+    } catch (e) {
+      break
+    }
+    const songs = parsePlaylistSongs(html)
+    if (!songs.length) break
+    all.push(...songs)
+    const p = parsePagination(html)
+    if (!p || !p.totalPages || p.page >= p.totalPages) break
+    page++
+  }
+  return all
+}
+
+// 歌单详情页「导入歌单」入口：读取整张歌单（全部分页）后，
+// 走 importCollectionAsPlaylist（已优化为抽样校验 + 一次性批量写），把整张歌单秒级导入。
+export async function importEntireCollection() {
+  if (!currentCollection) return
+  const { pl, endpoint } = currentCollection
+  try {
+    showSnackbar('正在读取歌单全部歌曲…', true)
+    const songs = await loadAllCollectionSongs(pl, endpoint)
+    if (!songs.length) {
+      showSnackbar('歌单没有可导入的歌曲')
+      return
+    }
+    // importCollectionAsPlaylist 内部已管理导入锁，直接委托即可
+    await importCollectionAsPlaylist(pl, songs)
+  } catch (e) {
+    showSnackbar(friendlyError(e, '导入失败'))
   }
 }

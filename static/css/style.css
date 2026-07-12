@@ -3279,6 +3279,30 @@
 .songs-back-btn:hover { background: rgba(0,0,0,.06); }
 .songs-back-btn:active { background: rgba(0,0,0,.12); }
 
+/* 歌单详情页「导入歌单」按钮：顶栏右侧，与返回按钮同高、主色描边风格 */
+.songs-import-btn {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--md-primary, #6366f1);
+    background: transparent;
+    border: 1.5px solid var(--md-outline-variant, #e0e0e0);
+    border-radius: 999px;
+    padding: 7px 16px;
+    cursor: pointer;
+    flex-shrink: 0;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background .15s, border-color .15s;
+}
+.songs-import-btn:hover:not(:disabled) {
+    background: var(--md-primary-container, #eef0ff);
+    border-color: var(--md-primary, #6366f1);
+}
+.songs-import-btn:disabled { opacity: .5; cursor: not-allowed; }
+
 /* 搜索分页：摘要 + 翻页条，对齐 go-music-dl 网页端 */
 .page-summary {
     padding: 10px 4px 2px;

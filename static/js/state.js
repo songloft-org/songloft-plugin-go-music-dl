@@ -84,6 +84,8 @@ export const store = {
   songsBackToMyList: false,
   // 发现（每日推荐 / 分类歌单）
   discoverRecommendLoaded: false,
+  discoverRecommendPlaylists: [],
+  discoverRecommendCat: 'all',
   discoverCatsLoaded: false,
   // 多选 / 批量导入
   selectMode: false,

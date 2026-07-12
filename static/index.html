@@ -211,10 +211,12 @@
 
             <div id="discoverRecommendSection">
                 <div class="card" style="margin-top:16px;">
-                    <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
+                    <div class="card-header" style="display:flex;flex-direction:column;align-items:flex-start;gap:2px;">
                         <span>每日推荐歌单</span>
+                        <span style="font-size:12px;font-weight:400;color:var(--md-on-surface-variant,#666);">按渠道查看各平台为你推荐的歌单。</span>
                     </div>
                     <div class="card-body">
+                        <div class="mylist-cats" id="discoverRecommendCats"></div>
                         <div id="discoverRecommendList" class="playlist-grid" style="padding-top:0"><div class="empty-state">加载中…</div></div>
                     </div>
                 </div>
@@ -232,6 +234,7 @@
                 <div class="card" style="margin-top:16px;">
                     <div class="card-header">歌单</div>
                     <div class="card-body">
+                        <div id="discoverCatHeader" style="margin-bottom:12px;"></div>
                         <div id="discoverCatPlaylists" class="playlist-grid" style="padding-top:0"><div class="empty-state">选择上方分类查看歌单</div></div>
                     </div>
                 </div>
@@ -261,8 +264,10 @@
         <header class="songs-overlay-bar">
             <button class="songs-back-btn" id="backToPlaylistsBtn">← 返回</button>
             <h1 id="mySongsTitle">歌单歌曲</h1>
+            <button class="songs-import-btn" id="importCollectionBtn">导入歌单</button>
         </header>
         <div class="container" style="padding-bottom:150px;">
+            <div id="mySongsSummary" style="display:none; padding:0 16px; margin-top:8px;"></div>
             <div class="card" style="margin-top:12px;">
                 <div class="card-body" id="mySongsList"><div class="empty-state">加载中…</div></div>
             </div>

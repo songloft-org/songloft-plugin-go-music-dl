@@ -397,62 +397,78 @@ export function openImportPanelForBatch() {
   }, 0)
 }
 
-// 把一批歌曲依次导入曲库，返回统计；带逐条进度提示
+// 批量把一批歌曲写进曲库（一次请求），返回 { songs: 含 id 的歌曲数组, failed: 失效歌列表 }。
+// 后端走 /import/batch：抽样快速路径 + 命中失效转逐首换源容错，
+// 失效歌单独计入 failed 返回，不再让整批因个别失效歌而全部失败。
+async function importSongsBatchIntoLibrary(songs) {
+  const items = songs.map((s) => ({
+    id: s.id,
+    name: s.name,
+    artist: s.artist,
+    album: s.album,
+    cover: buildCoverUrl(s.cover),
+    source: s.source,
+    duration: s.duration,
+    extra: s.extra || {},
+  }))
+  const r = await API.importBatch(items)
+  if (!r || !r.success) throw new Error('批量导入失败')
+  const imported = Array.isArray(r.songs) ? r.songs : []
+  const failed = Array.isArray(r.failed) ? r.failed : []
+  if (!imported.length) {
+    const names = failed.map((f) => f.name).filter(Boolean).join('、')
+    throw new Error('全部音源失效' + (names ? `：${names}` : ''))
+  }
+  return { songs: imported, failed }
+}
+
+// 把一批歌曲一次性批量导入曲库（沿用 go-music-dl 风格：不逐首探测、一次写库）
 async function batchImportToLibrary() {
   if (!beginImport()) return
   const songs = [...store.batchList]
   try {
     closeImportPanel()
-    let ok = 0
-    let already = 0
-    let failed = 0
-    const failCats = {} // 统计失败类别，用于汇总时给出原因
-    for (let i = 0; i < songs.length; i++) {
-      showSnackbar(`正在导入到曲库 ${i + 1}/${songs.length}…`, true)
-      try {
-        const r = await importSongToLibrary(songs[i])
-        if (r && r.success) {
-          if (r.already_local) already++
-          else ok++
-        } else failed++
-      } catch (e) {
-        failed++
-        failCats[classifyError(e).category] =
-          (failCats[classifyError(e).category] || 0) + 1
-      }
-    }
-    let msg = `已导入 ${ok} 首到曲库`
-    if (already) msg += `，${already} 首已在曲库`
-    if (failed) msg += `，${failed} 首失败` + batchFailHint(failCats, failed)
+    showSnackbar(`正在批量导入到曲库（${songs.length} 首）…`, true)
+    const { songs: imported, failed } = await importSongsBatchIntoLibrary(songs)
+    let msg = `已导入 ${imported.length} 首到曲库`
+    if (failed.length) msg += `，${failed.length} 首音源失效`
     showSnackbar(msg)
     exitBatchMode()
+  } catch (e) {
+    showSnackbar(friendlyError(e, '导入失败'))
   } finally {
     endImport()
   }
 }
 
-// 把一批歌曲依次导入指定歌单，返回统计
+// 把一批歌曲一次性批量导入指定歌单，返回统计（含失效歌清单 deadList）
 async function addSongsBatchToPlaylist(playlistId, songs) {
-  let ok = 0
-  let skipped = 0
-  let failed = 0
-  const failCats = {}
-  for (let i = 0; i < songs.length; i++) {
-    showSnackbar(`正在导入到歌单 ${i + 1}/${songs.length}…`, true)
-    try {
-      const r = await importSongToLibrary(songs[i])
-      if (r && r.song && r.song.id) {
-        const res = await Host.playlists.addSongs(playlistId, [r.song.id])
-        if (res && res.skipped > 0 && !res.added) skipped++
-        else ok++
-      } else failed++
-    } catch (e) {
-      failed++
-      failCats[classifyError(e).category] =
-        (failCats[classifyError(e).category] || 0) + 1
+  try {
+    const { songs: imported, failed: dead } = await importSongsBatchIntoLibrary(songs)
+    const ids = imported.map((s) => s.id)
+    const res = await Host.playlists.addSongs(playlistId, ids)
+    const added = (res && res.added) || 0
+    const skipped = (res && res.skipped) || 0
+    const writeFailed = Math.max(0, imported.length - added - skipped)
+    const totalFailed = dead.length + writeFailed
+    return {
+      ok: added,
+      skipped,
+      failed: totalFailed,
+      failHint: totalFailed ? batchFailHint({}, totalFailed) : '',
+      deadList: dead,
+    }
+  } catch (e) {
+    const cat = classifyError(e).category
+    const failCats = { [cat]: songs.length }
+    return {
+      ok: 0,
+      skipped: 0,
+      failed: songs.length,
+      failHint: batchFailHint(failCats, songs.length),
+      deadList: [],
     }
   }
-  return { ok, skipped, failed, failHint: batchFailHint(failCats, failed) }
 }
 
 // 根据失败类别统计生成汇总提示后缀：单一原因时给明确原因，混合时给概览
@@ -474,10 +490,13 @@ async function batchImportToPlaylist(playlistId) {
   const songs = [...store.batchList]
   try {
     closeImportPanel()
-    const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(playlistId, songs)
+    const { ok, skipped, failed, failHint, deadList } = await addSongsBatchToPlaylist(playlistId, songs)
     let msg = `已导入 ${ok} 首到歌单`
     if (skipped) msg += `，${skipped} 首已在歌单中`
-    if (failed) msg += `，${failed} 首失败` + (failHint || '')
+    if (failed) {
+      const deadNames = (deadList || []).map((d) => d.name).filter(Boolean).slice(0, 5).join('、')
+      msg += `，${failed} 首音源失效${deadNames ? `（如：${deadNames}）` : ''}` + (failHint || '')
+    }
     showSnackbar(msg)
     exitBatchMode()
   } finally {
@@ -496,7 +515,11 @@ export async function importCollectionAsPlaylist(pl, songs) {
   try {
     const name = pl && pl.title ? pl.title : (pl && pl.contentType === 'album' ? '专辑歌单' : '导入的歌单')
     showSnackbar('正在创建歌单…', true)
-    const playlist = await Host.playlists.create({ name, type: 'normal' })
+    // 歌单缩略图：宿主 GetPlaylistCover 仅在 CoverURL 非空时代理转发，无「取首歌封面」回退，
+    // 故创建时显式带上封面。优先用歌单本身封面（pl.cover，原始 CDN），缺失时回退首歌封面，
+    // 与歌曲入库一致的 go-music-dl 代理地址，避免歌单列表全是空白封面。
+    const coverUrl = buildCoverUrl((pl && pl.cover) || (songs[0] && songs[0].cover))
+    const playlist = await Host.playlists.create({ name, type: 'normal', cover_url: coverUrl })
     if (!playlist || !playlist.id) {
       showSnackbar('创建歌单失败')
       return
@@ -506,10 +529,13 @@ export async function importCollectionAsPlaylist(pl, songs) {
       (p) => p && String(p.id) === String(playlist.id),
     )
     if (!existed) store.importPlaylists.push(playlist)
-    const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(playlist.id, songs)
+    const { ok, skipped, failed, failHint, deadList } = await addSongsBatchToPlaylist(playlist.id, songs)
     let msg = `已导入 ${ok} 首到歌单「${name}」`
     if (skipped) msg += `，${skipped} 首已在歌单中`
-    if (failed) msg += `，${failed} 首失败` + (failHint || '')
+    if (failed) {
+      const deadNames = (deadList || []).map((d) => d.name).filter(Boolean).slice(0, 5).join('、')
+      msg += `，${failed} 首音源失效${deadNames ? `（如：${deadNames}）` : ''}` + (failHint || '')
+    }
     showSnackbar(msg)
   } catch (e) {
     showSnackbar(friendlyError(e, '导入失败'))

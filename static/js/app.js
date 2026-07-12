@@ -26,7 +26,11 @@ import {
   showBrowserHome,
   backToBrowserHome,
 } from './search.js'
-import { loadUserPlaylists, backToPlaylists } from './playlists.js'
+import {
+  loadUserPlaylists,
+  backToPlaylists,
+  importEntireCollection,
+} from './playlists.js'
 import {
   loadDiscoverRecommend,
   loadDiscoverCategories,
@@ -227,6 +231,9 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
+  // 歌单详情页「导入歌单」：整张歌单一次性批量导入（秒级，替代逐首串行）
+  const importCollectionBtn = document.getElementById('importCollectionBtn')
+  if (importCollectionBtn) importCollectionBtn.onclick = importEntireCollection
   // 搜索结果页「返回首页」：回到每日推荐，无需刷新整页
   document.getElementById('backToHomeBtn').onclick = backToBrowserHome
   const confirmNewPlaylistBtn = document.getElementById('confirmNewPlaylist')

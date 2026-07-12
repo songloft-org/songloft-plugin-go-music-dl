@@ -95,6 +95,7 @@ function toRemoteSongRequest(item: SongItem) {
 async function probeDownloadable(
   item: SongItem,
   config: GoMusicDlConfig,
+  deadline?: { hit: boolean },
 ): Promise<'ok' | 'dead' | 'unknown'> {
   const url = buildDownloadUrl(
     {
@@ -111,6 +112,8 @@ async function probeDownloadable(
     false, // stream=1：导入前轻量探测，不下载整曲；失效时 go-music-dl 返回 404/502
   )
   if (!url) return 'dead'
+  // 整体时限已触发则直接放行（unknown），不空耗（QuickJS 无 AbortController，用标志位）
+  if (deadline?.hit) return 'unknown'
   const timeout = new Promise<'unknown'>((resolve) =>
     setTimeout(() => resolve('unknown'), 8000),
   )
@@ -143,28 +146,146 @@ async function probeDownloadable(
   }
 }
 
-async function importRemoteSong(item: SongItem): Promise<any> {
-  if (!item.id || !item.name) {
+// 批量导入时复用单首的「自动换源」能力：调 go-music-dl /switch_source 找可播替代源。
+// 返回换源后的 SongItem；无可用/出错返回 null。与前端 api.js#switchSource 同款契约。
+async function switchSourceItem(
+  item: SongItem,
+  baseUrl: string,
+  deadline?: { hit: boolean },
+): Promise<SongItem | null> {
+  const u = new URLSearchParams({
+    name: item.name || '',
+    artist: item.artist || '',
+    source: item.source || '',
+    current: item.source || '',
+    duration: String(item.duration || 0),
+  })
+  // 单步换源硬超时：go-music-dl 在 /switch_source 上卡死会无限挂起整批。
+  // QuickJS 运行时无 AbortController，故用 Promise.race + setTimeout 兜底（同 miot 插件做法）。
+  if (deadline?.hit) return null
+  const timeout = new Promise<any>((_, reject) =>
+    setTimeout(() => reject(new Error('switch_source timeout')), 8000),
+  )
+  try {
+    const res: any = await Promise.race([
+      fetch(`${baseUrl}/switch_source?${u.toString()}`, {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      }),
+      timeout,
+    ])
+    if (res.status === 404 || !res.ok) return null
+    const j = await res.json()
+    if (!j || !j.id) return null
+    return {
+      id: String(j.id),
+      name: j.name,
+      artist: j.artist,
+      album: j.album,
+      cover: j.cover,
+      source: j.source,
+      duration: j.duration,
+      extra: j.extra || {},
+    }
+  } catch {
+    return null
+  }
+}
+
+// 并发受限遍历：避免一次性 100 个探测请求打爆 go-music-dl。
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (t: T) => Promise<R>,
+): Promise<R[]> {
+  const ret: R[] = new Array(items.length)
+  let i = 0
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++
+      ret[idx] = await fn(items[idx])
+    }
+  }
+  const n = Math.max(1, Math.min(limit, items.length))
+  await Promise.all(Array.from({ length: n }, () => worker()))
+  return ret
+}
+
+const MAX_SWITCH_ROUNDS = 3
+
+// 批量导入整体时限：网关通常 60s 超时，留余量；超时则把已探明可播的歌
+// 先写库、未完成（多为换源/失效歌）计入 failed，避免整批被网关 504 掐断。
+const BATCH_DEADLINE_MS = 50000
+
+// 对单首做「探测 + 自动换源」判定：可导入返回换源后的 item，否则返回失效原因。
+// 与单首 /import 的 switchSource 重试语义一致，避免歌单里一首失效歌拖垮整批。
+// deadline 为整体时限标志位：触发后即刻停止换源空耗，未确认可播的歌判定为失败，
+// 保证正常歌（早已探明可播）不受影响、稳定进库。
+async function resolveImportableItem(
+  item: SongItem,
+  config: GoMusicDlConfig,
+  baseUrl: string,
+  deadline?: { hit: boolean },
+): Promise<{ item?: SongItem; reason?: string }> {
+  if (deadline?.hit) return { reason: 'timeout' }
+  let it = item
+  let probe = await probeDownloadable(it, config, deadline)
+  // 换源歌（source 已是目标平台）本就换不回，多轮空耗只会拖长整批、触发 504；
+  // 这里仍保留有限轮换源以救回「正常失效歌」，但整体受 deadline 限定时长约束。
+  for (
+    let r = 0;
+    r < MAX_SWITCH_ROUNDS && probe === 'dead' && !deadline?.hit;
+    r++
+  ) {
+    const alt = await switchSourceItem(it, baseUrl, deadline)
+    if (!alt) break
+    it = alt
+    probe = await probeDownloadable(it, config, deadline)
+  }
+  if (probe === 'dead') return { reason: 'dead' }
+  // 超时且未确认可播：保守归入失败，不把不确定歌塞进曲库
+  if (deadline?.hit && probe !== 'ok') return { reason: 'timeout' }
+  return { item: it }
+}
+
+// 把一批歌曲作为 remote 歌曲一次性写进 Songloft 曲库（含 source_data）。
+// 宿主 /api/v1/songs/remote 本就支持数组批量写入，这里按块切分，避免单请求体过大。
+// 返回宿主创建的歌曲数组（含 id）。
+async function importRemoteSongs(items: SongItem[]): Promise<any[]> {
+  // 过滤缺 id/name 的非法项，避免个别坏歌（如解析异常的换源歌）整批否决、
+  // 把正常歌一起拖崩（保证正常歌稳定进库）。全部非法才报错。
+  const valid = items.filter((it) => it && it.id && it.name)
+  if (!valid.length) {
     throw new Error('Invalid download item')
   }
   const hostUrl = await (globalThis as any).songloft.plugin.getHostUrl()
   const token = await (globalThis as any).songloft.plugin.getToken()
-  const res = await fetch(`${hostUrl}/api/v1/songs/remote`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify([toRemoteSongRequest(item)]),
-  })
-  if (!res.ok) {
-    throw new Error(`Import failed: ${await res.text()}`)
+  const out: any[] = []
+  const CHUNK = 50
+  for (let i = 0; i < valid.length; i += CHUNK) {
+    const chunk = valid.slice(i, i + CHUNK).map(toRemoteSongRequest)
+    const res = await fetch(`${hostUrl}/api/v1/songs/remote`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(chunk),
+    })
+    if (!res.ok) {
+      throw new Error(`Import failed: ${await res.text()}`)
+    }
+    const data = await res.json()
+    const songs = Array.isArray(data.songs) ? data.songs : []
+    if (!songs.length || typeof songs[0].id !== 'number') {
+      throw new Error('Import response missing song id')
+    }
+    out.push(...songs)
   }
-  const data = await res.json()
-  const songs = Array.isArray(data.songs) ? data.songs : []
-  if (!songs[0] || typeof songs[0].id !== 'number') {
-    throw new Error('Import response missing song id')
-  }
+  return out
+}
+
+async function importRemoteSong(item: SongItem): Promise<any> {
+  const songs = await importRemoteSongs([item])
   return songs[0]
 }
 
@@ -465,6 +586,79 @@ router.post('/import', async (req: HTTPRequest) => {
       success: true,
       song,
       already_local: currentSong?.type === 'local',
+    })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      500,
+    )
+  }
+})
+
+// 批量导入：整批一次性写宿主曲库，从 O(N) 串行往返降到 O(N/CHUNK)。
+// 容错策略（解决「一首失效歌拖垮整张歌单」）：
+//   1) 抽样快速路径——探前 3 首，全可播则整批直接写（秒级，覆盖绝大多数正常歌单）。
+//   2) 慢速容错路径——抽样命中失效歌时，逐首探测 + 自动换源（与单首 /import 一致），
+//      换回可播的歌仍批量写入，换不回的歌单独记入 failed 返回，绝不整批取消。
+// 网络抖动(unknown)放行，以免误杀慢速但有效的音源。
+router.post('/import/batch', async (req: HTTPRequest) => {
+  const body = parseBody(req) as { items?: SongItem[] }
+  const items = body.items
+  if (!Array.isArray(items) || !items.length) {
+    return jsonResponse({ error: 'items (array) is required' }, 400)
+  }
+  try {
+    const config = await getConfig()
+    const baseUrl = (config.baseUrl || '').replace(/\/+$/, '')
+    if (!baseUrl) {
+      return jsonResponse({ error: '服务地址未配置' }, 400)
+    }
+    let okItems: SongItem[]
+    let failed: { name: string; reason: string }[] = []
+    const sampleSize = Math.min(3, items.length)
+    const sampleProbes = await Promise.all(
+      items.slice(0, sampleSize).map((it) => probeDownloadable(it, config)),
+    )
+    if (sampleProbes.some((p) => p === 'dead')) {
+      // 抽样命中失效歌：逐首探测 + 自动换源容错，好歌批量写，失效单独报告。
+      // 整体加时限：换源/失效歌可能长时间拖慢整批（含 go-music-dl 卡死），
+      // 超时则放弃未完成项、已探明可播的歌照常写入，保证正常歌进库、不被网关 504 掐断。
+      // 注：QuickJS 运行时无 AbortController，用 { hit } 标志位 + setTimeout 实现时限。
+      const deadline = { hit: false }
+      const timer = setTimeout(() => {
+        deadline.hit = true
+      }, BATCH_DEADLINE_MS)
+      try {
+        const results = await mapWithConcurrency(items, 8, (it) =>
+          resolveImportableItem(it, config, baseUrl, deadline),
+        )
+        okItems = []
+        results.forEach((r, idx) => {
+          if (r.item) okItems.push(r.item)
+          else
+            failed.push({
+              name: items[idx].name || '',
+              reason: r.reason || 'unknown',
+            })
+        })
+      } finally {
+        clearTimeout(timer)
+      }
+    } else {
+      okItems = items
+    }
+    if (!okItems.length) {
+      return jsonResponse(
+        { error: '全部音源失效或无法换源，已取消导入', failed },
+        409,
+      )
+    }
+    const songs = await importRemoteSongs(okItems)
+    return jsonResponse({
+      success: true,
+      count: songs.length,
+      songs,
+      failed,
     })
   } catch (e) {
     return jsonResponse(

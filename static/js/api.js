@@ -71,6 +71,13 @@ export const API = {
       method: 'POST',
       body: JSON.stringify({ item }),
     }),
+  // 批量导入：一次请求写整批歌曲（后端抽样校验 + 一次性批量写宿主），
+  // 替代逐首串行 /import，把大歌单从「分钟级」压到「秒级」。
+  importBatch: (items) =>
+    fetchAuth('./import/batch', {
+      method: 'POST',
+      body: JSON.stringify({ items }),
+    }),
 }
 
 // 宿主歌单 API：经插件后端代理（/playlists...）调用，避免 common.js 的

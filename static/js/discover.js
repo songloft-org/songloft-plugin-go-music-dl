@@ -34,15 +34,18 @@ function fetchText(path, params) {
   })
 }
 
-// ---------- 每日推荐 ----------
+// ---------- 每日推荐（支持平台筛选：选平台后显示对应歌单，对齐 go-music-dl 原生 tab） ----------
 export async function loadDiscoverRecommend() {
   const b = base()
   const listEl = document.getElementById('discoverRecommendList')
+  const catsEl = document.getElementById('discoverRecommendCats')
   if (!b) {
     empty(listEl, '请先在「插件设置」中填写 go-music-dl 服务地址')
+    if (catsEl) catsEl.innerHTML = ''
     return
   }
   empty(listEl, '加载中…')
+  if (catsEl) catsEl.innerHTML = ''
   try {
     const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
     const res = await fetchText('/recommend', params)
@@ -59,8 +62,10 @@ export async function loadDiscoverRecommend() {
       empty(listEl, '暂无推荐歌单（可能该音源不支持，或未登录）')
       return
     }
-    listEl.innerHTML = ''
-    playlists.forEach((pl) => listEl.appendChild(renderPlaylistRow(pl)))
+    store.discoverRecommendPlaylists = playlists
+    store.discoverRecommendCat = 'all'
+    buildDiscoverRecommendCats()
+    renderDiscoverRecommendByCat()
     store.discoverRecommendLoaded = true
   } catch (e) {
     empty(
@@ -68,6 +73,60 @@ export async function loadDiscoverRecommend() {
       isNetworkError(e) ? '无法连接服务，请检查 go-music-dl 是否启动' : e.message,
     )
   }
+}
+
+// 按实际出现的音源构建「全部 + 各平台」筛选条
+function buildDiscoverRecommendCats() {
+  const bar = document.getElementById('discoverRecommendCats')
+  if (!bar) return
+  const present = []
+  const seen = new Set()
+  for (const s of ALL_SOURCES) {
+    if (store.discoverRecommendPlaylists.some((p) => p.source === s) && !seen.has(s)) {
+      present.push(s)
+      seen.add(s)
+    }
+  }
+  store.discoverRecommendPlaylists.forEach((p) => {
+    if (!seen.has(p.source)) {
+      present.push(p.source)
+      seen.add(p.source)
+    }
+  })
+  const cats = [{ key: 'all', label: '全部' }]
+  present.forEach((s) => cats.push({ key: s, label: sourceLabel(s) || s }))
+  bar.innerHTML = ''
+  cats.forEach((c) => {
+    const count =
+      c.key === 'all'
+        ? store.discoverRecommendPlaylists.length
+        : store.discoverRecommendPlaylists.filter((p) => p.source === c.key).length
+    const chip = document.createElement('button')
+    chip.className = 'mylist-cat' + (c.key === store.discoverRecommendCat ? ' active' : '')
+    chip.textContent = `${c.label} · ${count}`
+    chip.onclick = () => {
+      store.discoverRecommendCat = c.key
+      buildDiscoverRecommendCats()
+      renderDiscoverRecommendByCat()
+    }
+    bar.appendChild(chip)
+  })
+}
+
+// 按当前选中平台过滤并渲染推荐歌单
+function renderDiscoverRecommendByCat() {
+  const listEl = document.getElementById('discoverRecommendList')
+  if (!listEl) return
+  const list =
+    store.discoverRecommendCat === 'all'
+      ? store.discoverRecommendPlaylists
+      : store.discoverRecommendPlaylists.filter((p) => p.source === store.discoverRecommendCat)
+  if (!list.length) {
+    listEl.innerHTML = '<div class="empty-state">该平台暂无推荐歌单</div>'
+    return
+  }
+  listEl.innerHTML = ''
+  list.forEach((pl) => listEl.appendChild(renderPlaylistRow(pl)))
 }
 
 // ---------- 分类歌单 ----------
@@ -126,7 +185,7 @@ function parseCategories(html) {
         const tmp = document.createElement('a')
         tmp.href = chip.getAttribute('href') || ''
         const q = tmp.search || ''
-        if (name && q) categories.push({ name, query: q })
+        if (name && q) categories.push({ name, query: q, source })
       })
       if (categories.length) groups.push({ name: gname, categories })
     })
@@ -188,8 +247,10 @@ function renderCategoryChips(src) {
 async function openCategory(cat) {
   const b = base()
   const gridEl = document.getElementById('discoverCatPlaylists')
+  const headerEl = document.getElementById('discoverCatHeader')
   if (!b || !gridEl) return
   gridEl.innerHTML = '<div class="empty-state">加载中…</div>'
+  if (headerEl) headerEl.innerHTML = ''
   try {
     const res = await gmdFetch(`${b}/category_playlists${cat.query}`, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -198,7 +259,20 @@ async function openCategory(cat) {
       gridEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
       return
     }
-    const playlists = parsePlaylists(await res.text())
+    const html = await res.text()
+    // 渲染 go-music-dl 原生头部摘要：标题 + 找到 x 个歌单 + 分页
+    // （对齐原生 playlist_grid.html 的 .list-header，避免只丢卡片而丢摘要）
+    if (headerEl) {
+      const h = parseCategoryHeader(html)
+      const title = `${sourceLabel(cat.source) || cat.source} · ${cat.name}`
+      const lines = []
+      if (h && h.countText)
+        lines.push(`<div class="page-summary" style="padding-top:0;">${escapeHtml(h.countText)}</div>`)
+      if (h && h.summaryText)
+        lines.push(`<div class="page-summary">${escapeHtml(h.summaryText)}</div>`)
+      headerEl.innerHTML = `<div style="font-size:15px;font-weight:600;margin-bottom:4px;">${escapeHtml(title)}</div>${lines.join('')}`
+    }
+    const playlists = parsePlaylists(html)
     if (!playlists.length) {
       gridEl.innerHTML = '<div class="empty-state">该分类暂无歌单</div>'
       return
@@ -210,4 +284,21 @@ async function openCategory(cat) {
       isNetworkError(e) ? '无法连接服务' : escapeHtml(e.message)
     }</div>`
   }
+}
+
+// 解析 /category_playlists 返回的 .list-header（对齐 go-music-dl 原生 playlist_grid 头部）：
+// 「找到 x 个歌单」+「当前第 x / x 页，显示 1 - 30 / x」
+function parseCategoryHeader(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const header = doc.querySelector('.list-header')
+  if (!header) return null
+  const countEl = header.querySelector('.result-count')
+  const countText = countEl
+    ? countEl.textContent.replace(/\s+/g, ' ').trim()
+    : ''
+  const summaryEl = header.querySelector('.page-summary')
+  const summaryText = summaryEl
+    ? summaryEl.textContent.replace(/\s+/g, ' ').trim()
+    : ''
+  return { countText, summaryText }
 }
