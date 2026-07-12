@@ -236,42 +236,63 @@ export function createNewPlaylist() {
   store.newPlaylistCallback = async (name) => {
     if (!beginImport()) return
     try {
-      const playlist = await Host.playlists.create({ name: name, type: 'normal' })
-      if (!playlist || !playlist.id) {
-        showSnackbar('创建歌单失败')
-        return
-      }
-      // 批量模式：把整批歌曲导入新建歌单
+      // 批量模式：先导入曲库（只写有效歌，失效单独返回），全部失效则不创建歌单
       if (store.batchImport && store.batchList.length) {
         showSnackbar('正在导入到曲库…', true)
-        const { ok, skipped, failed, failHint } = await addSongsBatchToPlaylist(
-          playlist.id,
-          [...store.batchList],
-        )
+        let imported, dead
+        try {
+          ({ songs: imported, failed: dead } = await importSongsBatchIntoLibrary(
+            [...store.batchList],
+          ))
+        } catch (e) {
+          const m = (e && e.message) || ''
+          showSnackbar(
+            m.indexOf('全部音源失效') >= 0
+              ? '全部音源失效，未创建歌单'
+              : friendlyError(e, '导入失败'),
+          )
+          return
+        }
+        if (!imported.length) {
+          showSnackbar('全部音源失效，未创建歌单')
+          exitBatchMode()
+          return
+        }
+        const playlist = await Host.playlists.create({ name: name, type: 'normal' })
+        if (!playlist || !playlist.id) {
+          showSnackbar('创建歌单失败')
+          exitBatchMode()
+          return
+        }
         const existed = store.importPlaylists.some(
           (p) => p && String(p.id) === String(playlist.id),
         )
         if (!existed) store.importPlaylists.push(playlist)
         renderImportPlaylistList()
+        const ids = imported.map((s) => s.id)
+        const res = await Host.playlists.addSongs(playlist.id, ids)
+        const added = (res && res.added) || 0
+        const skipped = (res && res.skipped) || 0
         let msg = existed ? '同名歌单已存在' : '已导入到新歌单'
-        if (ok) msg += `（${ok} 首）`
+        if (added) msg += `（${added} 首）`
         if (skipped) msg += `，${skipped} 首已在歌单中`
-        if (failed) msg += `，${failed} 首失败` + (failHint || '')
+        if (dead.length) msg += `，${dead.length} 首失效已跳过`
         showSnackbar(msg)
         exitBatchMode()
         return
       }
-      // 单首模式
+      // 单首模式：先导入曲库拿 song.id，再创建歌单并加歌（导入失败不建空歌单）
       showSnackbar('正在导入到曲库…', true)
       const r = await doImportToLibrary()
       if (!r || !r.success || !r.song) {
         showSnackbar('导入失败')
         return
       }
-      // addSongs 返回 { added, skipped }：skipped>0 表示该歌曲早已在此歌单中
-      const res = await Host.playlists.addSongs(playlist.id, [r.song.id])
-      const added = (res && res.added) || 0
-      const skipped = (res && res.skipped) || 0
+      const playlist = await Host.playlists.create({ name: name, type: 'normal' })
+      if (!playlist || !playlist.id) {
+        showSnackbar('创建歌单失败')
+        return
+      }
       // 本地即时更新列表，避免重新拉取（宿主列表有缓存/一致性延迟时看不到新建项）。
       // 注意：主程序对同名歌单是幂等的——重名时会返回已存在的歌单（同一 id）而非新建，
       // 故这里必须按 id 去重，否则同一歌单会被重复 push，导致列表出现「重名两条」。
@@ -280,6 +301,10 @@ export function createNewPlaylist() {
       )
       if (!existed) store.importPlaylists.push(playlist)
       renderImportPlaylistList()
+      // addSongs 返回 { added, skipped }：skipped>0 表示该歌曲早已在此歌单中
+      const res = await Host.playlists.addSongs(playlist.id, [r.song.id])
+      const added = (res && res.added) || 0
+      const skipped = (res && res.skipped) || 0
       if (added === 0 && skipped > 0) {
         showSnackbar(existed ? '同名歌单已存在，且歌曲已在歌单中' : '该歌曲已在歌单中')
       } else if (existed) {
@@ -431,7 +456,7 @@ async function batchImportToLibrary() {
     showSnackbar(`正在批量导入到曲库（${songs.length} 首）…`, true)
     const { songs: imported, failed } = await importSongsBatchIntoLibrary(songs)
     let msg = `已导入 ${imported.length} 首到曲库`
-    if (failed.length) msg += `，${failed.length} 首音源失效`
+    if (failed.length) msg += `，${failed.length} 首失效已跳过`
     showSnackbar(msg)
     exitBatchMode()
   } catch (e) {
@@ -495,7 +520,7 @@ async function batchImportToPlaylist(playlistId) {
     if (skipped) msg += `，${skipped} 首已在歌单中`
     if (failed) {
       const deadNames = (deadList || []).map((d) => d.name).filter(Boolean).slice(0, 5).join('、')
-      msg += `，${failed} 首音源失效${deadNames ? `（如：${deadNames}）` : ''}` + (failHint || '')
+      msg += `，${failed} 首失效已跳过${deadNames ? `（如：${deadNames}）` : ''}` + (failHint || '')
     }
     showSnackbar(msg)
     exitBatchMode()
@@ -504,8 +529,8 @@ async function batchImportToPlaylist(playlistId) {
   }
 }
 
-// 整歌单一键导入为 Songloft 歌单：用歌单标题创建（同名幂等复用已有歌单），
-// 再把当前详情页的所有歌曲依次导入曲库并加入该歌单。复用逐首导入与批量加歌逻辑。
+// 整歌单一键导入为 Songloft 歌单：先批量导入曲库（只写有效歌曲，失效单独返回），
+// 全部失效则不创建歌单；只要有一首有效，才用歌单标题创建（同名幂等复用已有歌单）并加歌。
 export async function importCollectionAsPlaylist(pl, songs) {
   if (!songs || !songs.length) {
     showSnackbar('当前歌单没有可导入的歌曲')
@@ -514,11 +539,30 @@ export async function importCollectionAsPlaylist(pl, songs) {
   if (!beginImport()) return
   try {
     const name = pl && pl.title ? pl.title : (pl && pl.contentType === 'album' ? '专辑歌单' : '导入的歌单')
-    showSnackbar('正在创建歌单…', true)
+    showSnackbar('正在导入到曲库…', true)
+    // 先导入曲库：只写有效歌曲，失效的单独返回（不写库）。全部失效则不创建歌单。
+    let imported, dead
+    try {
+      ({ songs: imported, failed: dead } = await importSongsBatchIntoLibrary(songs))
+    } catch (e) {
+      const m = (e && e.message) || ''
+      showSnackbar(
+        m.indexOf('全部音源失效') >= 0
+          ? '全部音源失效，未创建歌单'
+          : friendlyError(e, '导入失败'),
+      )
+      return
+    }
+    if (!imported.length) {
+      const names = dead.map((d) => d.name).filter(Boolean).slice(0, 5).join('、')
+      showSnackbar('全部音源失效，未创建歌单' + (names ? `（如：${names}）` : ''))
+      return
+    }
     // 歌单缩略图：宿主 GetPlaylistCover 仅在 CoverURL 非空时代理转发，无「取首歌封面」回退，
     // 故创建时显式带上封面。优先用歌单本身封面（pl.cover，原始 CDN），缺失时回退首歌封面，
     // 与歌曲入库一致的 go-music-dl 代理地址，避免歌单列表全是空白封面。
     const coverUrl = buildCoverUrl((pl && pl.cover) || (songs[0] && songs[0].cover))
+    showSnackbar('正在创建歌单…', true)
     const playlist = await Host.playlists.create({ name, type: 'normal', cover_url: coverUrl })
     if (!playlist || !playlist.id) {
       showSnackbar('创建歌单失败')
@@ -529,13 +573,13 @@ export async function importCollectionAsPlaylist(pl, songs) {
       (p) => p && String(p.id) === String(playlist.id),
     )
     if (!existed) store.importPlaylists.push(playlist)
-    const { ok, skipped, failed, failHint, deadList } = await addSongsBatchToPlaylist(playlist.id, songs)
-    let msg = `已导入 ${ok} 首到歌单「${name}」`
+    const ids = imported.map((s) => s.id)
+    const res = await Host.playlists.addSongs(playlist.id, ids)
+    const added = (res && res.added) || 0
+    const skipped = (res && res.skipped) || 0
+    let msg = `已导入 ${added} 首到歌单「${name}」`
     if (skipped) msg += `，${skipped} 首已在歌单中`
-    if (failed) {
-      const deadNames = (deadList || []).map((d) => d.name).filter(Boolean).slice(0, 5).join('、')
-      msg += `，${failed} 首音源失效${deadNames ? `（如：${deadNames}）` : ''}` + (failHint || '')
-    }
+    if (dead.length) msg += `，${dead.length} 首失效已跳过`
     showSnackbar(msg)
   } catch (e) {
     showSnackbar(friendlyError(e, '导入失败'))

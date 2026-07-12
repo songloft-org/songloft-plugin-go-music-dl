@@ -146,51 +146,6 @@ async function probeDownloadable(
   }
 }
 
-// 批量导入时复用单首的「自动换源」能力：调 go-music-dl /switch_source 找可播替代源。
-// 返回换源后的 SongItem；无可用/出错返回 null。与前端 api.js#switchSource 同款契约。
-async function switchSourceItem(
-  item: SongItem,
-  baseUrl: string,
-  deadline?: { hit: boolean },
-): Promise<SongItem | null> {
-  const u = new URLSearchParams({
-    name: item.name || '',
-    artist: item.artist || '',
-    source: item.source || '',
-    current: item.source || '',
-    duration: String(item.duration || 0),
-  })
-  // 单步换源硬超时：go-music-dl 在 /switch_source 上卡死会无限挂起整批。
-  // QuickJS 运行时无 AbortController，故用 Promise.race + setTimeout 兜底（同 miot 插件做法）。
-  if (deadline?.hit) return null
-  const timeout = new Promise<any>((_, reject) =>
-    setTimeout(() => reject(new Error('switch_source timeout')), 8000),
-  )
-  try {
-    const res: any = await Promise.race([
-      fetch(`${baseUrl}/switch_source?${u.toString()}`, {
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      }),
-      timeout,
-    ])
-    if (res.status === 404 || !res.ok) return null
-    const j = await res.json()
-    if (!j || !j.id) return null
-    return {
-      id: String(j.id),
-      name: j.name,
-      artist: j.artist,
-      album: j.album,
-      cover: j.cover,
-      source: j.source,
-      duration: j.duration,
-      extra: j.extra || {},
-    }
-  } catch {
-    return null
-  }
-}
-
 // 并发受限遍历：避免一次性 100 个探测请求打爆 go-music-dl。
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -210,41 +165,26 @@ async function mapWithConcurrency<T, R>(
   return ret
 }
 
-const MAX_SWITCH_ROUNDS = 3
-
 // 批量导入整体时限：网关通常 60s 超时，留余量；超时则把已探明可播的歌
 // 先写库、未完成（多为换源/失效歌）计入 failed，避免整批被网关 504 掐断。
 const BATCH_DEADLINE_MS = 50000
 
-// 对单首做「探测 + 自动换源」判定：可导入返回换源后的 item，否则返回失效原因。
-// 与单首 /import 的 switchSource 重试语义一致，避免歌单里一首失效歌拖垮整批。
-// deadline 为整体时限标志位：触发后即刻停止换源空耗，未确认可播的歌判定为失败，
-// 保证正常歌（早已探明可播）不受影响、稳定进库。
+// 对单首做「下载可达性探测」判定：可导入返回 item，否则返回失效原因。
+// 不尝试换源救回：换过源/失效的歌直接判 dead 丢弃，避免调用 go-music-dl
+// /switch_source（极慢且常卡死）把整批拖到网关 504、连正常歌也一起丢失。
+// 用户诉求是「失效歌直接不要，只导入有效歌」，故这里不求救回。
+// 'unknown'（网络抖动/超时）放行，避免误杀慢速但有效的音源。
 async function resolveImportableItem(
   item: SongItem,
   config: GoMusicDlConfig,
-  baseUrl: string,
   deadline?: { hit: boolean },
 ): Promise<{ item?: SongItem; reason?: string }> {
   if (deadline?.hit) return { reason: 'timeout' }
-  let it = item
-  let probe = await probeDownloadable(it, config, deadline)
-  // 换源歌（source 已是目标平台）本就换不回，多轮空耗只会拖长整批、触发 504；
-  // 这里仍保留有限轮换源以救回「正常失效歌」，但整体受 deadline 限定时长约束。
-  for (
-    let r = 0;
-    r < MAX_SWITCH_ROUNDS && probe === 'dead' && !deadline?.hit;
-    r++
-  ) {
-    const alt = await switchSourceItem(it, baseUrl, deadline)
-    if (!alt) break
-    it = alt
-    probe = await probeDownloadable(it, config, deadline)
-  }
+  const probe = await probeDownloadable(item, config, deadline)
   if (probe === 'dead') return { reason: 'dead' }
   // 超时且未确认可播：保守归入失败，不把不确定歌塞进曲库
   if (deadline?.hit && probe !== 'ok') return { reason: 'timeout' }
-  return { item: it }
+  return { item }
 }
 
 // 把一批歌曲作为 remote 歌曲一次性写进 Songloft 曲库（含 source_data）。
@@ -597,9 +537,10 @@ router.post('/import', async (req: HTTPRequest) => {
 
 // 批量导入：整批一次性写宿主曲库，从 O(N) 串行往返降到 O(N/CHUNK)。
 // 容错策略（解决「一首失效歌拖垮整张歌单」）：
-//   1) 抽样快速路径——探前 3 首，全可播则整批直接写（秒级，覆盖绝大多数正常歌单）。
-//   2) 慢速容错路径——抽样命中失效歌时，逐首探测 + 自动换源（与单首 /import 一致），
-//      换回可播的歌仍批量写入，换不回的歌单独记入 failed 返回，绝不整批取消。
+//   1) 抽样快速路径——探前 5 首，全可播则整批直接写（秒级，覆盖绝大多数正常歌单）。
+//   2) 慢速容错路径——抽样命中失效歌时，逐首做下载可达性探测，
+//      可播的歌批量写入，失效/换源的歌直接抛弃（不尝试换源救回，避免 /switch_source
+//      极慢卡死把整批拖到网关 504），单独记入 failed 返回，绝不整批取消。
 // 网络抖动(unknown)放行，以免误杀慢速但有效的音源。
 router.post('/import/batch', async (req: HTTPRequest) => {
   const body = parseBody(req) as { items?: SongItem[] }
@@ -615,23 +556,24 @@ router.post('/import/batch', async (req: HTTPRequest) => {
     }
     let okItems: SongItem[]
     let failed: { name: string; reason: string }[] = []
-    const sampleSize = Math.min(3, items.length)
+    const sampleSize = Math.min(5, items.length)
     const sampleProbes = await Promise.all(
       items.slice(0, sampleSize).map((it) => probeDownloadable(it, config)),
     )
     if (sampleProbes.some((p) => p === 'dead')) {
-      // 抽样命中失效歌：逐首探测 + 自动换源容错，好歌批量写，失效单独报告。
-      // 整体加时限：换源/失效歌可能长时间拖慢整批（含 go-music-dl 卡死），
-      // 超时则放弃未完成项、已探明可播的歌照常写入，保证正常歌进库、不被网关 504 掐断。
+      // 抽样命中失效歌：逐首做下载可达性探测（不换源救回），好歌批量写，失效单独报告。
+      // 换源/失效歌仅一次轻量探测即判 dead 丢弃，绝不再调慢速的 /switch_source，
+      // 避免整批被拖到网关 504；整体仍加时限：超时则放弃未完成项、已探明可播的歌照常写入，
+      // 保证正常歌进库、不被网关 504 掐断。
       // 注：QuickJS 运行时无 AbortController，用 { hit } 标志位 + setTimeout 实现时限。
       const deadline = { hit: false }
       const timer = setTimeout(() => {
         deadline.hit = true
       }, BATCH_DEADLINE_MS)
       try {
-        const results = await mapWithConcurrency(items, 8, (it) =>
-          resolveImportableItem(it, config, baseUrl, deadline),
-        )
+      const results = await mapWithConcurrency(items, 8, (it) =>
+        resolveImportableItem(it, config, deadline),
+      )
         okItems = []
         results.forEach((r, idx) => {
           if (r.item) okItems.push(r.item)
