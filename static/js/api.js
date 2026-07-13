@@ -9,6 +9,21 @@ export function normalizeBaseUrl(raw) {
   return u
 }
 
+// 判定 hostname 是否为内网（私有/回环）地址：用于「外网访问自动切换 go-music-dl 地址」
+export function isInternalHostname(h) {
+  if (!h) return true
+  h = String(h).toLowerCase()
+  return (
+    h === 'localhost' || h === '127.0.0.1' || h === '[::1]' || h === '::1' ||
+    /^192\.168\./.test(h) || /^10\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+  )
+}
+// 当前是否以外网方式访问主程序（浏览器 hostname 非内网）
+export function isExternalAccess() {
+  return !isInternalHostname(location.hostname)
+}
+
 // 宿主会把 access_token 注入 localStorage['songloft-auth']，插件 API 需要带 Bearer 头
 function getAuthHeaders() {
   const headers = { 'Content-Type': 'application/json' }
@@ -175,17 +190,24 @@ export function setConnStatus(text, kind) {
   el.className = 'conn-status ' + (kind || '')
 }
 
-// 设置页「测试连接」：探测服务可达性并显示状态
+// 设置页「测试连接」：内网与外网地址并发探测，分别显示结果（外网为空则提示共用内网）
 export async function testConnection() {
-  const base = (store.config.baseUrl || '').trim()
-  if (!base) {
-    setConnStatus('请先填写服务地址', 'err')
+  const internal = (store.config.internalBaseUrl || store.config.baseUrl || '').trim()
+  const external = (store.config.externalBaseUrl || '').trim()
+  if (!internal) {
+    setConnStatus('请先填写内网/默认服务地址', 'err')
     return
   }
   setConnStatus('正在连接…', 'pending')
-  const r = await probeService(base)
-  if (r.ok) setConnStatus('连接成功 ✓', 'ok')
-  else setConnStatus('无法连接，请检查地址或服务是否启动', 'err')
+  const [ri, re] = await Promise.all([
+    probeService(internal),
+    external ? probeService(external) : Promise.resolve(null),
+  ])
+  const parts = [ri.ok ? '内网 ✓' : '内网 ✗']
+  if (external) parts.push(re && re.ok ? '外网 ✓' : '外网 ✗')
+  else parts.push('外网 未填（共用内网）')
+  const allOk = ri.ok && (external ? re && re.ok : true)
+  setConnStatus(parts.join(' ｜ '), allOk ? 'ok' : 'err')
 }
 
 // 调 /switch_source 找可播替代音源。

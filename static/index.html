@@ -282,8 +282,12 @@
                 <div class="card-body">
                     <div class="form-group">
                         <label class="form-label">go-music-dl 服务地址</label>
+                        <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">内网 / 默认</div>
                         <input type="text" class="text-field" id="configBaseUrl" placeholder="http://127.0.0.1:58091">
                         <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（插件会自动补 /music）</div>
+                        <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">外网访问地址（可选）</div>
+                        <input type="text" class="text-field" id="configExternalBaseUrl" placeholder="https://你的公网域名:端口">
+                        <div class="card-desc" style="padding:0;margin-top:4px;">当主程序通过公网域名/IP 被外网访问时，前端自动改用此地址直连 go-music-dl；留空则内外网都用上面的内网地址。建议配 https，以免主程序为 https 时被混合内容拦截。</div>
                         <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
                         <div class="conn-row">
                             <button class="btn-text" id="testConnBtn" type="button">测试连接</button>
