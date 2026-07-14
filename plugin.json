@@ -14,7 +14,8 @@
     "storage",
     "songs.read",
     "songs.write",
-    "playlists.write"
+    "playlists.write",
+    "inter-plugin"
   ],
   "updateUrl": "https://raw.githubusercontent.com/songloft-org/songloft-plugin-go-music-dl/main/plugin.json",
   "download_url": "https://github.com/songloft-org/songloft-plugin-go-music-dl/releases/download/v2026.7.12/go-music-dl.jsplugin.zip",
