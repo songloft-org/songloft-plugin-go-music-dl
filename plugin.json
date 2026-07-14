@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/songloft-org/plugin-toolchain/main/schemas/plugin.schema.json",
   "name": "GoMusicDL",
-  "version": "2026.7.12",
+  "version": "2026.7.14",
   "description": "通过本地或远程 go-music-dl 实例聚合搜索网易云、QQ、酷狗、酷我、咪咕、Bilibili 等音源，支持试听、歌词与导入本地库。",
   "author": "Songloft Team",
   "homepage": "https://github.com/songloft-org/songloft-plugin-go-music-dl",
@@ -18,7 +18,7 @@
     "inter-plugin"
   ],
   "updateUrl": "https://raw.githubusercontent.com/songloft-org/songloft-plugin-go-music-dl/main/plugin.json",
-  "download_url": "https://github.com/songloft-org/songloft-plugin-go-music-dl/releases/download/v2026.7.12/go-music-dl.jsplugin.zip",
+  "download_url": "https://github.com/songloft-org/songloft-plugin-go-music-dl/releases/download/v2026.7.14/go-music-dl.jsplugin.zip",
   "entryHash": "",
   "zipHash": ""
 }
