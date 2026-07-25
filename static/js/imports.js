@@ -569,17 +569,33 @@ export async function importCollectionAsPlaylist(pl, songs) {
     // 故创建时显式带上封面。优先用歌单本身封面（pl.cover，原始 CDN），缺失时回退首歌封面，
     // 与歌曲入库一致的 go-music-dl 代理地址，避免歌单列表全是空白封面。
     const coverUrl = buildCoverUrl((pl && pl.cover) || (songs[0] && songs[0].cover))
-    showSnackbar('正在创建歌单…', true)
-    const playlist = await Host.playlists.create({ name, type: 'normal', cover_url: coverUrl })
-    if (!playlist || !playlist.id) {
-      showSnackbar('创建歌单失败')
-      return
+    
+    if (!store.importPlaylists || !store.importPlaylists.length) {
+      try {
+        store.importPlaylists = (await Host.playlists.list()) || []
+      } catch (e) {}
     }
-    // 主程序对同名歌单幂等：重名返回已存在的歌单（同一 id）。本地按 id 去重避免列表重复。
-    const existed = store.importPlaylists.some(
-      (p) => p && String(p.id) === String(playlist.id),
+    
+    let playlist = (store.importPlaylists || []).find(
+      (p) => p && p.name === name
     )
-    if (!existed) store.importPlaylists.push(playlist)
+    if (!playlist) {
+      showSnackbar('正在创建歌单…', true)
+      playlist = await Host.playlists.create({ name, type: 'normal', cover_url: coverUrl })
+      if (!playlist || !playlist.id) {
+        showSnackbar('创建歌单失败')
+        return
+      }
+      store.importPlaylists.push(playlist)
+    }
+    
+    // 本地按 id 去重避免列表重复
+    const existed = store.importPlaylists.some(
+      (p) => p && p !== playlist && String(p.id) === String(playlist.id),
+    )
+    if (!existed && !store.importPlaylists.includes(playlist)) {
+      store.importPlaylists.push(playlist)
+    }
     const ids = imported.map((s) => s.id)
     const res = await Host.playlists.addSongs(playlist.id, ids)
     const added = (res && res.added) || 0
