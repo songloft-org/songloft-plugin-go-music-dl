@@ -23,6 +23,7 @@ export async function doSearch(page = 1) {
     type = store.currentSearchType
     store.lastSearchKeyword = q
     store.lastSearchType = type
+    if (store.swappedSongs) store.swappedSongs.clear()
   } else {
     q = store.lastSearchKeyword
     type = store.lastSearchType

@@ -426,7 +426,14 @@ export function openImportPanelForBatch() {
 // 后端走 /import/batch：抽样快速路径 + 命中失效转逐首换源容错，
 // 失效歌单独计入 failed 返回，不再让整批因个别失效歌而全部失败。
 async function importSongsBatchIntoLibrary(songs) {
-  const items = songs.map((s) => ({
+  const mapped = songs.map((s) => {
+    const key = songKey(s)
+    if (store.swappedSongs && store.swappedSongs.has(key)) {
+      return store.swappedSongs.get(key)
+    }
+    return s
+  })
+  const items = mapped.map((s) => ({
     id: s.id,
     name: s.name,
     artist: s.artist,

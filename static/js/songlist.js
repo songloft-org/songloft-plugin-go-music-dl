@@ -91,6 +91,8 @@ export async function switchUntilPlayable(card, song, validByKey) {
     if (ok === true) {
       applySwitchedSong(card, alt)
       validByKey.set(songKey(song), true)
+      if (!store.swappedSongs) store.swappedSongs = new Map()
+      store.swappedSongs.set(songKey(song), alt)
       setSongStatus(card, 'ok', '已换源 · ' + sourceLabel(alt.source))
       setSongBitrate(card, bitrate)
       setCardEnabled(card, true)
@@ -100,6 +102,8 @@ export async function switchUntilPlayable(card, song, validByKey) {
       // 换源接口本身已校验可播，仅检测端连不上时保守采用，避免误杀
       applySwitchedSong(card, alt)
       validByKey.set(songKey(song), true)
+      if (!store.swappedSongs) store.swappedSongs = new Map()
+      store.swappedSongs.set(songKey(song), alt)
       setSongStatus(
         card,
         'pending',

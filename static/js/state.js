@@ -92,6 +92,7 @@ export const store = {
   // 多选 / 批量导入
   selectMode: false,
   selectedSongs: new Map(),
+  swappedSongs: new Map(),
   batchImport: false,
   batchList: [],
   // 导入面板

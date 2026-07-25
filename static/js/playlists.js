@@ -286,6 +286,7 @@ export async function loadUserPlaylists() {
 let currentCollection = null
 
 export async function openCollection(pl, endpoint, showImport, page = 1) {
+  if (store.swappedSongs) store.swappedSongs.clear()
   store.songsBackToMyList = !!document
     .getElementById('tab-mylist')
     .classList.contains('active')
