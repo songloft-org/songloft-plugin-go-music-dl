@@ -289,7 +289,10 @@
                         <input type="text" class="text-field" id="configExternalBaseUrl" placeholder="https://你的公网域名:端口">
                         <div class="card-desc" style="padding:0;margin-top:4px;">当主程序通过公网域名/IP 被外网访问时，前端自动改用此地址直连 go-music-dl；留空则内外网都用上面的内网地址。建议配 https，以免主程序为 https 时被混合内容拦截。</div>
                         <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">对外可达地址（音箱播放用，可选）</div>
-                        <input type="text" class="text-field" id="configServerHost" placeholder="http://192.168.1.190:58091">
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <input type="text" class="text-field" id="configServerHost" placeholder="http://192.168.1.190:58091" style="flex:1;">
+                            <button class="btn-text" id="autoFillServerHostBtn" type="button">自动填充</button>
+                        </div>
                         <div class="card-desc" style="padding:0;margin-top:4px;">智能音箱（MIoT）调用本插件「不入库直推」播放时，需要一个音箱可直连的本插件地址。留空时按 baseUrl host → 宿主地址 → 网卡 LAN 地址顺序自动推导；若自动推导失败（如宿主只监听 127.0.0.1），请显式填写可被音箱访问的 Songloft 主机地址。</div>
                         <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
                         <div class="conn-row">

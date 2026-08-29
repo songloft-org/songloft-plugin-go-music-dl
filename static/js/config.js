@@ -47,6 +47,21 @@ export function setAllSources(checked) {
     .forEach((cb) => { cb.checked = checked })
 }
 
+// 自动填充对外可达地址：autoFill —— 浏览器当前访问地址大概率就是音箱可达的宿主地址，
+// 只填入输入框不自动保存（反代/异网访问时 origin 可能并非音箱视角），由用户确认后点「保存配置」。
+export function autoFillServerHost() {
+  const el = document.getElementById('configServerHost')
+  if (!el) return
+  const origin = window.location.origin || `${window.location.protocol}//${window.location.host}`
+  if (!origin || origin === 'null') {
+    showSnackbar('无法获取当前访问地址')
+    return
+  }
+  el.value = origin
+  const isLoopback = /localhost|127\.0\.0\.1|\[::1\]|(^|:)::1$/.test(origin)
+  showSnackbar(isLoopback ? '已填入，但 localhost/127.0.0.1 音箱无法访问，请改为局域网地址' : '已填入当前访问地址，确认后点保存配置')
+}
+
 export async function saveConfig() {
   const baseUrl = document.getElementById('configBaseUrl').value.trim()
   const externalBaseUrl = (

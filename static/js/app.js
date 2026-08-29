@@ -19,7 +19,7 @@ import {
 import { testConnection, switchSource } from './api.js'
 import { applySwitchedSong } from './songlist.js'
 import { showSnackbar } from './util.js'
-import { loadConfig, saveConfig, setAllSources } from './config.js'
+import { loadConfig, saveConfig, setAllSources, autoFillServerHost } from './config.js'
 import {
   doSearch,
   loadRecommend,
@@ -169,6 +169,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   })
   document.getElementById('saveConfigBtn').onclick = saveConfig
+  // 自动填充对外可达地址：只填不存，阻止冒泡避免误触发保存（本页其他按钮多为「即点即存」交互）
+  const afBtn = document.getElementById('autoFillServerHostBtn')
+  if (afBtn) {
+    afBtn.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      autoFillServerHost()
+    })
+  }
   document.getElementById('testConnBtn').onclick = testConnection
   // 全选 / 清空：切换勾选后立即保存，免去再点「保存配置」
   document.getElementById('selectAllSourcesBtn').onclick = () => { setAllSources(true); saveConfig() }
