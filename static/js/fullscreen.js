@@ -20,13 +20,23 @@ export function closeFullscreenPlayer() {
   document.body.style.overflow = ''
 }
 
-export function toggleLyricPage() {
-  const pages = document.getElementById('fpPages')
-  if (!pages) return
-  const showLyrics = pages.scrollLeft < pages.clientWidth / 2
-  pages.scrollTo({ left: showLyrics ? pages.clientWidth : 0, behavior: 'smooth' })
-  const dots = document.querySelectorAll('#fpPageIndicator .fp-dot')
-  dots.forEach((d, i) => d.classList.toggle('active', i === (showLyrics ? 1 : 0)))
+// 音量控制：顶栏喇叭按钮点击直接切换静音，图标随状态切换 volume_off / volume_up。
+export function initVolumeControl() {
+  const btn = document.getElementById('fpVolumeBtn')
+  const icon = document.getElementById('fpVolumeIcon')
+  if (!btn || !icon) return
+  const audio = getAudio()
+
+  function updateIcon() {
+    icon.textContent = audio.muted || audio.volume === 0 ? 'volume_off' : 'volume_up'
+  }
+
+  btn.addEventListener('click', () => {
+    audio.muted = !audio.muted
+    updateIcon()
+  })
+  audio.addEventListener('volumechange', updateIcon)
+  updateIcon()
 }
 
 export function bindSeek(trackId) {

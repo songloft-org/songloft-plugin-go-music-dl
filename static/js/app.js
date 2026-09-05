@@ -13,8 +13,8 @@ import {
 import {
   openFullscreenPlayer,
   closeFullscreenPlayer,
-  toggleLyricPage,
   bindSeek,
+  initVolumeControl,
 } from './fullscreen.js'
 import { testConnection, switchSource } from './api.js'
 import { applySwitchedSong } from './songlist.js'
@@ -130,10 +130,10 @@ function initPlayer() {
   document.getElementById('fpPlayBtn').onclick = togglePlay
   document.getElementById('fpPrevBtn').onclick = prevSong
   document.getElementById('fpNextBtn').onclick = nextSong
-  document.getElementById('fpLyricToggle').onclick = toggleLyricPage
 
   bindSeek('pbTrack')
   bindSeek('fpProgressTrack')
+  initVolumeControl()
 
   // 供 index.html 内联 onclick 调用
   window.openFullscreenPlayer = openFullscreenPlayer
