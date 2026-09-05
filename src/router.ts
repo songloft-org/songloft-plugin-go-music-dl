@@ -482,6 +482,38 @@ router.get('/stream/:token', async (req: HTTPRequest, params: any) => {
   }
 })
 
+// 为音箱投放生成指向本插件 /stream/:token 的对外直链（前端 cast.js 调用）。
+// 宿主网络地址与网卡信息（getHostUrl/getNetworkAddresses）仅后端可得，
+// 前端无法自行推导，故由前端把歌曲 POST 上来，这里复用 makeDirectStreamUrl
+// 的 4 级 host 推导（serverHost → baseUrl host → 宿主地址 → 网卡 LAN 地址）。
+// 推导失败返回 { url: null }，前端据此降级提示——与 topone 直推是同一约束。
+router.post('/cast/stream-url', async (req: HTTPRequest) => {
+  const body = parseBody(req) as { item?: SongItem }
+  const item = body.item
+  if (!item || !item.id || !item.source) {
+    return jsonResponse({ error: 'item is required' }, 400)
+  }
+  const song: GoSong = {
+    id: String(item.id),
+    source: String(item.source),
+    name: String(item.name || ''),
+    artist: String(item.artist || ''),
+    album: String(item.album || ''),
+    cover: String(item.cover || ''),
+    duration: Number(item.duration) || 0,
+    extra: (item.extra as Record<string, any>) || {},
+  }
+  try {
+    const url = await makeDirectStreamUrl(song)
+    return jsonResponse({ url: url || null })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      500,
+    )
+  }
+})
+
 // 单首搜索端点（topone）：
 // 供 MIoT「智能音箱」插件的外部搜索源调用（相对路径 loopback，无需改 miot 代码）。
 // 契约兼容 OnlineSearcher：POST { keyword, hint?, quality? } → { code, msg, data }。

@@ -12,6 +12,7 @@ import {
   restoreLastPlayback,
 } from './player.js'
 import { initPlaybackPersist } from './persist.js'
+import { initCast } from './cast.js'
 import {
   openFullscreenPlayer,
   closeFullscreenPlayer,
@@ -154,6 +155,8 @@ function initPlayer() {
 document.addEventListener('DOMContentLoaded', () => {
   initTabs()
   initPlayer()
+  // 投放到音箱：恢复连接选择、注册播放传输钩子、绑定音箱按钮（须先于任何播放交互）
+  initCast()
   // 配置加载后再恢复上次播放（封面代理 URL 依赖 store.config.baseUrl），
   // 恢复为暂停态：迷你条显示上次歌曲与进度，点播放续播，不自动出声
   loadConfig()

@@ -59,6 +59,43 @@ export async function fetchAuth(url, opts = {}) {
   return res.json()
 }
 
+// 调宿主上其他插件的 HTTP 路由（根绝对路径，同源，带 Bearer；common.js 的
+// apiGet 因 API_BASE='.' 只能命中本插件路由，跨插件须用本函数直连）。
+// 404/503（宿主对未加载插件返回 plugin_unavailable）归一为 miot_missing，
+// 便于上层给出「未安装 MIoT 插件」的明确提示。
+export async function hostPluginFetch(path, opts = {}) {
+  let res
+  try {
+    res = await fetch(path, { headers: getAuthHeaders(), ...opts })
+  } catch (e) {
+    const err = new Error('网络异常：' + ((e && e.message) || e))
+    err.category = 'network'
+    throw err
+  }
+  if (res.status === 404 || res.status === 503) {
+    const err = new Error('未检测到 MIoT 插件，请先安装并启用「智能音箱」插件')
+    err.category = 'miot_missing'
+    throw err
+  }
+  if (res.status === 401) {
+    const err = new Error('401 未授权：请刷新插件页面后重试')
+    err.category = 'auth'
+    throw err
+  }
+  const j = await res.json().catch(() => null)
+  if (j && j.success === false) {
+    const err = new Error(j.error || 'MIoT 调用失败')
+    err.category = 'miot_error'
+    throw err
+  }
+  if (!res.ok) {
+    const err = new Error('MIoT 请求失败: HTTP ' + res.status)
+    err.category = 'miot_error'
+    throw err
+  }
+  return j
+}
+
 // 把音源原始封面 CDN 地址转成 go-music-dl 的 /music/cover_proxy 代理地址，
 // 规避网易云/QQ 等封面的防盗链 403 裂图（代理在中转时去掉了 Referer 限制）。
 // 幂等：已代理地址 / data: / blob: / 空值 直接返回原值，避免重复代理。
@@ -92,6 +129,13 @@ export const API = {
     fetchAuth('./import/batch', {
       method: 'POST',
       body: JSON.stringify({ items }),
+    }),
+  // 音箱投放：让后端为该歌生成指向 /stream/:token 的对外可达直链
+  // （宿主网络地址/网卡信息仅后端可得，前端无法自行推导）
+  castStreamUrl: (item) =>
+    fetchAuth('./cast/stream-url', {
+      method: 'POST',
+      body: JSON.stringify({ item }),
     }),
 }
 

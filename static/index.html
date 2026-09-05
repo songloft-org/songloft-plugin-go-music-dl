@@ -123,6 +123,23 @@
         .batch-count { font-size: 13px; color: var(--md-on-surface-variant, #666); }
         .batch-actions { display: flex; gap: 8px; align-items: center; }
         [data-theme="dark"] .batch-bar { background: var(--md-surface, #1b1b1f); }
+        /* 投放到音箱（cast）：面板居中弹出——嵌入态/独立态、宽窄屏都适配 */
+        .cast-panel { width: min(320px, 86vw); }
+        .cast-device-item .cast-dev-meta { min-width: 0; flex: 1; }
+        .cast-device-item .cast-dev-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .cast-device-item .cast-dev-sub { font-size: 12px; color: var(--md-on-surface-variant, #666); margin-top: 2px; }
+        .cast-device-item.active { background: rgba(99,102,241,.08); }
+        .cast-device-item.active .cast-dev-name { color: var(--md-primary, #5b5fc7); font-weight: 600; }
+        .cast-hint { padding: 14px 16px; font-size: 13px; color: var(--md-on-surface-variant, #666); line-height: 1.5; }
+        /* 音量调节行 */
+        .cast-volume-row { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--md-outline-variant, #f0f0f0); }
+        .cast-volume-row svg { flex: 0 0 auto; color: var(--md-on-surface-variant, #666); }
+        .cast-volume-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--md-primary, #5b5fc7); height: 4px; cursor: pointer; }
+        .cast-volume-value { flex: 0 0 auto; font-size: 12px; color: var(--md-on-surface-variant, #666); width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+        /* 入口在迷你播放条上：连接后用主题色高亮标识 */
+        #castBtn { flex: 0 0 auto; }
+        #castBtn svg { display: block; }
+        #castBtn.cast-active { color: var(--md-primary, #5b5fc7); background: rgba(99,102,241,.12); }
     </style>
     <script>
       // 主题联动：响应宿主 postMessage('songloft-theme') 与 document 上的 data-theme，
@@ -347,6 +364,23 @@
       </div>
     </div>
 
+    <!-- 投放到音箱：列出 MIoT 插件的设备，蓝牙式连接/断开（cast.js） -->
+    <div id="castPanel" class="import-panel cast-panel">
+      <div class="panel-header">投放到音箱</div>
+      <div id="castHint" class="cast-hint" style="display:none;"></div>
+      <div id="castDeviceList" class="import-playlist-list"></div>
+      <!-- 音量调节：音箱音量是设备全局值（0-100），仅连接后可见 -->
+      <div id="castVolumeRow" class="cast-volume-row" style="display:none;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+        <input type="range" id="castVolumeSlider" min="0" max="100" step="1" value="50" />
+        <span id="castVolumeValue" class="cast-volume-value">-</span>
+      </div>
+      <div class="panel-footer">
+        <button class="btn-text" id="castDisconnectBtn" type="button" style="display:none;">断开连接</button>
+        <button class="btn-text" id="castCloseBtn" type="button">关闭</button>
+      </div>
+    </div>
+
     <!-- 导入到歌单下拉菜单（贴着三点按钮，无全屏遮罩） -->
     <div id="importPlaylistPanel" class="import-panel import-dropdown">
       <div class="panel-header">导入到歌单</div>
@@ -407,6 +441,11 @@
             <span class="progress-time" id="pbTotal">0:00</span>
         </div>
         <span class="gmd-pb-bitrate" id="pbBitrate" title="当前播放音质（自动识别）"></span>
+        <!-- 投放到音箱：放迷你播放条而非 app-bar——嵌入 App Tab 时宿主会隐藏插件 app-bar
+             （components.css: html.embed .app-bar display:none），迷你播放条则两种形态常驻 -->
+        <button class="btn-icon gmd-pb-cast-btn" id="castBtn" title="投放到音箱">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M1 18v3h3c0-1.66-1.34-3-3-3zm0-4v2c2.76 0 5 2.24 5 5h2c0-3.87-3.13-7-7-7zm0-4v2c4.97 0 9 4.03 9 9h2c0-6.08-4.93-11-11-11zM21 3H3c-1.1 0-2 .9-2 2v3h2V5h18v14h-7v2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z"/></svg>
+        </button>
     </div>
 
     <!-- 全屏播放器 -->

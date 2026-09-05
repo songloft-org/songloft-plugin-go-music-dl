@@ -103,6 +103,11 @@ export const store = {
   audioRetry: 0,
   audioSwitchRetry: 0,
   audioSwitching: false,
+  // 投放（cast）：连接的 MIoT 音箱。castHooks 由 cast.js 在运行时注册
+  // （player.js 只认钩子，避免 player ↔ cast 循环依赖）
+  cast: { connected: false, accountId: '', deviceId: '', deviceName: '' },
+  castHooks: null,
+  castPosition: 0, // 投放中由状态轮询更新的音箱播放位置（秒）
 }
 
 // 卡片与歌曲数据的绑定（避免挂在 DOM 上导致类型/序列化问题）

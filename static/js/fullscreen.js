@@ -1,6 +1,7 @@
 // fullscreen.js — 全屏播放器控制
 import { store } from './state.js'
 import { syncProgress, getAudio } from './player.js'
+import { showSnackbar } from './util.js'
 
 export function openFullscreenPlayer() {
   const el = document.getElementById('fullscreenPlayer')
@@ -32,6 +33,11 @@ export function initVolumeControl() {
   }
 
   btn.addEventListener('click', () => {
+    // 投放模式：静音映射到音箱全局音量（本地 <audio> 不出声，无可 mute）
+    if (store.cast.connected && store.castHooks) {
+      store.castHooks.toggleMute()
+      return
+    }
     audio.muted = !audio.muted
     updateIcon()
   })
@@ -43,6 +49,11 @@ export function bindSeek(trackId) {
   const track = document.getElementById(trackId)
   if (!track) return
   track.addEventListener('click', (e) => {
+    // 投放模式：MiNA 云端无 seek 命令，禁用拖动（可用暂停/重播当前曲替代）
+    if (store.cast.connected) {
+      showSnackbar('投放模式下不支持拖动进度（音箱不支持 seek）')
+      return
+    }
     const audio = getAudio()
     if (!audio.duration) return
     const rect = track.getBoundingClientRect()

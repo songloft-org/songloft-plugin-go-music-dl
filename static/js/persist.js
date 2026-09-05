@@ -40,6 +40,15 @@ function writeJson(key, val) {
   }
 }
 
+// 供 cast.js 等模块复用的通用 JSON 存取（沿用同一套版本号与容错约定）
+export function readStoredJson(key) {
+  return readJson(key)
+}
+
+export function writeStoredJson(key, val) {
+  writeJson(key, val)
+}
+
 // 全量保存播放队列与当前索引。换源后 store.queue 已是换源结果，序列化即保留。
 export function savePlaybackState() {
   const cur = store.queue[store.currentIndex]

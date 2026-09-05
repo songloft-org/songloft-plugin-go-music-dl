@@ -2946,6 +2946,10 @@
 @media (min-width: 1440px) {
     .gmd-miniplayer { left: 100px; }
 }
+/* 嵌入 App Tab 时没有左侧 rail（tab-bar 被宿主移到顶部，宿主 embed 样式已同步重置
+   .tab-content/.snackbar 的 rail 偏移）；上面两条为独立态 rail 预留的偏移会泄漏，
+   导致内镶宽屏时播放条左侧空出一截——这里按同口径撤销（双类选择器优先级高于媒体查询内单类）。 */
+html.embed .gmd-miniplayer { left: 0; }
 
 /* 全屏播放器 —— 采用 miot 稳健方案：overflow-x:auto + scroll-snap，避免 flex 嵌套错位 */
 .fullscreen-player {

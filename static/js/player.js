@@ -146,6 +146,11 @@ export function playSong(song, index) {
   store.audioSwitchRetry = 0
   pendingResume = null // 正常切歌后恢复态作废，避免残留标记被误用
   savePlaybackState()
+  // 投放模式：转由 MIoT 音箱发声（castHooks 由 cast.js 注册，避免循环依赖）
+  if (store.cast.connected && store.castHooks) {
+    store.castHooks.play(song, index)
+    return
+  }
   startAudio(song)
 }
 
@@ -243,6 +248,11 @@ export function restoreLastPlayback() {
 }
 
 export function togglePlay() {
+  // 投放模式：播放/暂停映射到音箱（cast.js 内处理 paused 恢复 / stopped 重播）
+  if (store.cast.connected && store.castHooks) {
+    store.castHooks.toggle()
+    return
+  }
   const audio = getAudio()
   if (!audio.src) {
     // 恢复态：无 src 但有待续播歌曲，首次点播放取流并续到上次进度
@@ -254,6 +264,11 @@ export function togglePlay() {
 }
 
 export function stopPlay() {
+  // 投放模式：停止音箱播放并复位 UI（连接保持，蓝牙式「停播 ≠ 断开」）
+  if (store.cast.connected && store.castHooks) {
+    store.castHooks.stop()
+    return
+  }
   const audio = getAudio()
   audio.pause()
   audio.currentTime = 0
@@ -262,8 +277,11 @@ export function stopPlay() {
   // 队列播完自动停止：清掉持久化状态，与「暂无播放」UI 保持一致（不留恢复入口）
   clearPlaybackState()
   pendingResume = null
-  // 停止后无歌曲播放：封面露出音符占位，标题/歌手/歌词回到「暂无播放 / - / 暂无歌词」，
-  // 迷你播放条保持常驻（不直接隐藏），让底部布局稳定、符合音乐 App 惯例。
+  resetNowPlayingUI()
+}
+
+// 播放复位 UI（本地 stopPlay 与投放停止共用）
+export function resetNowPlayingUI() {
   const pbCover = document.getElementById('pbCover')
   if (pbCover) { pbCover.onerror = null; pbCover.removeAttribute('src') }
   const pbTitle = document.getElementById('pbTitle')
@@ -272,6 +290,10 @@ export function stopPlay() {
   if (pbTitle) pbTitle.textContent = '暂无播放'
   if (pbArtist) pbArtist.textContent = '-'
   if (pbLyric) pbLyric.textContent = '暂无歌词'
+  const fpTitle = document.getElementById('fpSongTitle')
+  const fpArtist = document.getElementById('fpSongArtist')
+  if (fpTitle) fpTitle.textContent = '暂无播放'
+  if (fpArtist) fpArtist.textContent = '-'
 }
 
 export function playQueue(i) {
