@@ -11,6 +11,7 @@ import { escapeHtml, formatBitrateBadge, setSongBitrate } from './util.js'
 import { normalizeBaseUrl, gmdFetch, switchSource, buildCoverUrl } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
+import { savePlaybackState } from './persist.js'
 
 export function songKey(s) {
   return `${s.source || ''}__${(s.id != null ? s.id : '')}`
@@ -62,6 +63,8 @@ export function applySwitchedSong(card, alt) {
   if (d) {
     d.song = alt
     if (d.index >= 0) store.queue[d.index] = alt
+    // 队列已被替换为换源结果，同步持久化（覆盖播放失败自动换源与多轮换源两条路径）
+    savePlaybackState()
   }
   const t = card.querySelector('.song-title')
   if (t) t.textContent = alt.name || ''

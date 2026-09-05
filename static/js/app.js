@@ -9,7 +9,9 @@ import {
   togglePlay,
   prevSong,
   startAudio,
+  restoreLastPlayback,
 } from './player.js'
+import { initPlaybackPersist } from './persist.js'
 import {
   openFullscreenPlayer,
   closeFullscreenPlayer,
@@ -134,6 +136,8 @@ function initPlayer() {
   bindSeek('pbTrack')
   bindSeek('fpProgressTrack')
   initVolumeControl()
+  // 播放进度节流持久化 + 页面收尾（刷新/隐藏）flush
+  initPlaybackPersist(audio)
 
   // 供 index.html 内联 onclick 调用
   window.openFullscreenPlayer = openFullscreenPlayer
@@ -150,7 +154,14 @@ function initPlayer() {
 document.addEventListener('DOMContentLoaded', () => {
   initTabs()
   initPlayer()
-  loadConfig().then(() => showBrowserHome())
+  // 配置加载后再恢复上次播放（封面代理 URL 依赖 store.config.baseUrl），
+  // 恢复为暂停态：迷你条显示上次歌曲与进度，点播放续播，不自动出声
+  loadConfig()
+    .then(() => {
+      restoreLastPlayback()
+      showBrowserHome()
+    })
+    .catch(() => showBrowserHome())
   document.getElementById('searchBtn').onclick = () => doSearch()
   document
     .getElementById('searchInput')
