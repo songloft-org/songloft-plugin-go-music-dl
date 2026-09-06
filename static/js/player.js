@@ -4,7 +4,7 @@ import {
   effectiveQuality,
   FALLBACK_COVER,
 } from './state.js'
-import { normalizeBaseUrl, buildCoverUrl, gmdFetch } from './api.js'
+import { normalizeBaseUrl, buildCoverUrl, inspectSong } from './api.js'
 import { fmtTime, formatBitrateBadge } from './util.js'
 import { loadLyrics, highlightLyric } from './lyrics.js'
 import {
@@ -77,31 +77,6 @@ export function syncProgress() {
   if (store.fpLyrics.length) highlightLyric(p)
 }
 
-// 查询 go-music-dl /inspect 拿当前歌曲实际比特率（网易云按当前音质档位透传 level），
-// 与列表卡片 inspect 同款逻辑，仅取 bitrate。用于播放条自动识别当前音质。
-async function fetchBitrate(song) {
-  const base = normalizeBaseUrl(store.config.baseUrl)
-  if (!base) return ''
-  const extra = { ...(song.extra || {}) }
-  if (song.source === 'netease') extra.level = effectiveQuality()
-  const p = new URLSearchParams({
-    id: song.id,
-    source: song.source,
-    duration: song.duration || 0,
-    extra: JSON.stringify(extra),
-  })
-  try {
-    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    })
-    if (!res.ok) return ''
-    const j = await res.json()
-    return (j && j.bitrate) || ''
-  } catch {
-    return ''
-  }
-}
-
 export function updateNowPlaying(song, cover) {
   document.getElementById('pbTitle').textContent = song.name || '未知歌曲'
   document.getElementById('pbArtist').textContent = song.artist || '-'
@@ -132,8 +107,9 @@ export function updateNowPlaying(song, cover) {
   syncProgress()
   loadLyrics(song)
   highlightCurrentInList()
-  // 自动识别当前歌曲实际比特率：异步查询，不阻塞播放；切音质后也会随 startAudio 重新触发
-  fetchBitrate(song).then((br) => {
+  // 自动识别当前歌曲实际比特率：异步查询（与列表徽标共用 api.js inspectSong），不阻塞播放；
+  // 切音质后也会随 startAudio 重新触发
+  inspectSong(song).then(({ bitrate: br }) => {
     const el = document.getElementById('pbBitrate')
     if (el) el.textContent = formatBitrateBadge(br)
   })

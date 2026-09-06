@@ -135,6 +135,8 @@ export function parsePlaylistSongs(html) {
 
 // 解析歌单/专辑详情页 HTML 中的分页摘要（与 go-music-dl 网页端 page-summary 格式一致）：
 // 「当前第 {page} / {totalPages} 页，显示 {pageStart} - {pageEnd} / {total}」
+// 注意：后端 src/client.ts 有一份同实现拷贝（前端直连解析与后端抓取是两条数据通道，
+// QuickJS/WebView 两个运行时无法共享模块），正则变更时两处需同步。
 export function parsePagination(html) {
   const m = html.match(
     /当前第\s*(\d+)\s*\/\s*(\d+)\s*页，显示\s*(\d+)\s*-\s*(\d+)\s*\/\s*(\d+)/,

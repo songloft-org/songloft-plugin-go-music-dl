@@ -1,7 +1,9 @@
 // api.js — 网络/HTTP 层
-import { store } from './state.js'
+import { store, effectiveQuality } from './state.js'
 
 // go-music-dl 接口都在 /music 前缀下，根地址自动补上，避免拼出 /search 之类 404
+// 注意：后端 src/config.ts 有一份同实现拷贝（QuickJS/WebView 两个运行时无法共享模块），
+// 两处需同步修改。
 export function normalizeBaseUrl(raw) {
   let u = (raw || '').trim().replace(/\/+$/, '')
   if (!u) return ''
@@ -176,7 +178,6 @@ export const ERR_NETWORK = 'network'
 export const ERR_AUTH = 'auth'
 export const ERR_SOURCE = 'source'
 export const ERR_UNKNOWN = 'unknown'
-
 // 把异常归为四类之一，并返回原始 detail（后端真实错误信息），供上层拼装友好文案
 export function classifyError(e) {
   const msg = e && e.message ? String(e.message) : ''
@@ -294,5 +295,32 @@ export async function switchSource(song, opts = {}) {
     }
   } catch {
     return null
+  }
+}
+
+// 调 go-music-dl /inspect 拿歌曲可达性与比特率：{ valid, bitrate }
+// valid=true 可播 / false 失效 / null 网络请求错误。统一放这里供 songlist（列表徽标）
+// 与 player（播放条音质识别）共用——原先两处各写一份，曾出现实现漂移。
+export async function inspectSong(song) {
+  const base = normalizeBaseUrl(store.config.baseUrl)
+  if (!base) return { valid: null, bitrate: '' }
+  // 与 buildStreamUrl 同款：网易云注入音质档位，使列表显示的 bitrate = 实际播放音质
+  const extra = { ...(song.extra || {}) }
+  if (song.source === 'netease') extra.level = effectiveQuality()
+  const p = new URLSearchParams({
+    id: song.id,
+    source: song.source,
+    duration: song.duration || 0,
+    extra: JSON.stringify(extra),
+  })
+  try {
+    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+    })
+    if (!res.ok) return { valid: false, bitrate: '' }
+    const j = await res.json()
+    return { valid: !!(j && j.valid === true), bitrate: (j && j.bitrate) || '' }
+  } catch {
+    return { valid: null, bitrate: '' }
   }
 }

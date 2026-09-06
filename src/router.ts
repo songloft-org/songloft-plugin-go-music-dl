@@ -11,6 +11,7 @@ import {
   searchSongsPage,
   searchCollectionsPage,
   buildDownloadUrl,
+  buildInspectUrl,
   fetchLyric,
   GoSong,
 } from './client'
@@ -47,16 +48,28 @@ function toSearchItem(s: GoSong): SearchResultItem {
   }
 }
 
+// Uint8Array → string：String.fromCharCode.apply 展开大数组会超出 QuickJS 的
+// 参数上限（/import/batch 的 body 可达几十 KB，直接 apply 会抛错导致整批 500），
+// 逐 8KB 块拼接规避。
+function bytesToString(bytes: Uint8Array): string {
+  let out = ''
+  const CHUNK = 8192
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    out += String.fromCharCode.apply(
+      null,
+      Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[],
+    )
+  }
+  return out
+}
+
 function parseBody(req: HTTPRequest): any {
   if (!req.body) return {}
   try {
     const str =
       typeof req.body === 'string'
         ? req.body
-        : String.fromCharCode.apply(
-            null,
-            Array.from(req.body as Uint8Array),
-          )
+        : bytesToString(req.body as Uint8Array)
     return JSON.parse(str)
   } catch {
     return {}
@@ -89,16 +102,21 @@ function toRemoteSongRequest(item: SongItem) {
   }
 }
 
-// 导入前校验：用「下载器实际会用的同一个下载 URL」探一下可达性。
-// 这样能拦住前端 inspect 误判为可播、但 go-music-dl 实际已无法提供音源的失效歌曲，
-// 避免用户把死歌导入曲库后，到「歌曲下载」插件里才下载失败。
-// 返回：'ok' 可导入 / 'dead' 确属失效需拒绝 / 'unknown' 网络抖动等不确定，放行以免误杀。
+// 导入前校验：打 go-music-dl /music/inspect 做轻量可达性探测——服务端仅对上游发
+// Range 0-1 两字节请求，返回 JSON { valid, url, size, bitrate }，与前端 inspectSong
+// 判「可播」是同一套依据，前端徽标与后端导入校验从此不再可能分叉。
+// 历史教训：早期用 download?stream=1 探测，而宿主 QuickJS fetch 会把响应体整曲读进
+// 内存（上限 64MiB/首），批量导入时等于把每首歌都过一遍宿主内存，带宽/内存代价巨大。
+// 返回：'ok' 可导入 / 'dead' 确属失效需拒绝 / 'unknown' 网络抖动等不确定，放行以免误杀
+// （含 inspect 端点 404/5xx、200+非 JSON 等接口级异常——那是 go-music-dl 的问题，
+//  不是「这首歌失效」的证据，不能据此判死）。
 async function probeDownloadable(
   item: SongItem,
   config: GoMusicDlConfig,
   deadline?: { hit: boolean },
 ): Promise<'ok' | 'dead' | 'unknown'> {
-  const url = buildDownloadUrl(
+  if (deadline?.hit) return 'unknown'
+  const url = buildInspectUrl(
     {
       id: String(item.id),
       source: String(item.source),
@@ -110,11 +128,8 @@ async function probeDownloadable(
       extra: (item.extra as Record<string, any>) || {},
     },
     config.baseUrl,
-    false, // stream=1：导入前轻量探测，不下载整曲；失效时 go-music-dl 返回 404/502
   )
-  if (!url) return 'dead'
-  // 整体时限已触发则直接放行（unknown），不空耗（QuickJS 无 AbortController，用标志位）
-  if (deadline?.hit) return 'unknown'
+  if (!url) return 'dead' // baseUrl 为空：与旧口径一致按不可用处理（/import/batch 另有显式 400）
   const timeout = new Promise<'unknown'>((resolve) =>
     setTimeout(() => resolve('unknown'), 8000),
   )
@@ -126,22 +141,12 @@ async function probeDownloadable(
       }),
       timeout,
     ])
-    // 超时分支返回的是字符串 'unknown'，直接放行（不误杀慢速但有效的音源）
+    // 超时分支返回的是字符串 'unknown'，直接放行（inspect 上游自带 5s 上限，8s 是余量）
     if (typeof res.status !== 'number') return 'unknown'
-    // 2xx/3xx = go-music-dl 仍在正常派发（指向真实音源），可导入
-    if (res.status >= 200 && res.status < 400) {
-      // 防御：个别失效源会返回 200 + HTML 错误页，而非明确的 404。
-      // 若响应体是 HTML（非音频），则视为失效，避免把死歌导入歌单。
-      const ct = (res.headers && res.headers.get
-        ? res.headers.get('content-type')
-        : '') || ''
-      if (ct && ct.toLowerCase().includes('text/html')) return 'dead'
-      return 'ok'
-    }
-    // go-music-dl 自身返回 404/410 或 5xx，说明该音源已失效
-    if (res.status === 404 || res.status === 410 || res.status >= 500)
-      return 'dead'
-    return 'unknown'
+    if (!res.ok) return 'unknown'
+    const j: any = await res.json().catch(() => null)
+    if (!j || typeof j.valid !== 'boolean') return 'unknown'
+    return j.valid ? 'ok' : 'dead'
   } catch {
     return 'unknown'
   }

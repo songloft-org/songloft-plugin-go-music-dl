@@ -373,6 +373,26 @@ export function buildDownloadUrl(
   )
 }
 
+/**
+ * 构建轻量可达性探测 URL（go-music-dl /music/inspect）。
+ * inspect 在服务端仅对上游发 Range 0-1 两字节请求并返回 JSON { valid, url, size, bitrate }，
+ * 与网页端/插件前端（inspectSong）判断「歌曲可播」用的是同一套依据；
+ * 相比 download?stream=1（宿主 QuickJS fetch 会把整曲读进内存，上限 64MiB/首），
+ * 用它做导入前探测的带宽与内存成本可忽略。
+ */
+export function buildInspectUrl(song: GoSong, baseUrl: string): string {
+  const base = normalizeBaseUrl(baseUrl)
+  if (!base) return ''
+  const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
+  return (
+    `${base}/inspect` +
+    `?id=${encodeURIComponent(song.id)}` +
+    `&source=${encodeURIComponent(song.source)}` +
+    `&duration=${song.duration || 0}` +
+    `&extra=${extra}`
+  )
+}
+
 /** 拉取歌词（LRC 纯文本），失败返回空串 */
 export async function fetchLyric(
   song: GoSong,

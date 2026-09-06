@@ -35,6 +35,8 @@ const DEFAULT_CONFIG: GoMusicDlConfig = {
  * 归一化 go-music-dl 地址：go-music-dl 的所有 Web 接口都在 /music 前缀下
  * （源码常量 RoutePrefix = "/music"）。无论用户填的是根地址还是已带 /music，
  * 这里都规整成「…/music」形式，避免拼出 /search 这类不存在的路由导致 404→500。
+ * 注意：前端 WebView 侧在 static/js/api.js 有一份同实现拷贝（QuickJS/WebView
+ * 两个运行时无法共享模块），修改时两处需同步。
  */
 export function normalizeBaseUrl(raw: string): string {
   let u = (raw || '').trim().replace(/\/+$/, '')

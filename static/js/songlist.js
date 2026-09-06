@@ -2,13 +2,12 @@
 import {
   store,
   cardData,
-  effectiveQuality,
   sourceLabel,
   FALLBACK_COVER,
   MAX_SWITCH_ROUNDS,
 } from './state.js'
 import { escapeHtml, formatBitrateBadge, setSongBitrate } from './util.js'
-import { normalizeBaseUrl, gmdFetch, switchSource, buildCoverUrl } from './api.js'
+import { switchSource, buildCoverUrl, inspectSong } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
 import { savePlaybackState } from './persist.js'
@@ -31,31 +30,8 @@ export function setCardEnabled(card, enabled) {
   card.classList.toggle('song-dead', !enabled)
 }
 
-// 直接调 go-music-dl 的 /inspect（CORS 已开放 *）
-// 返回 { valid, bitrate }：valid=true 可播 / false 失效 / null 网络请求错误；bitrate 形如 "320 kbps" 或 "-"
-export async function inspectSong(song) {
-  const base = normalizeBaseUrl(store.config.baseUrl)
-  if (!base) return { valid: null, bitrate: '' }
-  // 与 buildStreamUrl 同款：网易云注入音质档位，使列表显示的 bitrate = 实际播放音质
-  const extra = { ...(song.extra || {}) }
-  if (song.source === 'netease') extra.level = effectiveQuality()
-  const p = new URLSearchParams({
-    id: song.id,
-    source: song.source,
-    duration: song.duration || 0,
-    extra: JSON.stringify(extra),
-  })
-  try {
-    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
-    })
-    if (!res.ok) return { valid: false, bitrate: '' }
-    const j = await res.json()
-    return { valid: !!(j && j.valid === true), bitrate: (j && j.bitrate) || '' }
-  } catch {
-    return { valid: null, bitrate: '' }
-  }
-}
+// 直接调 go-music-dl 的 /inspect（CORS 已开放 *）：实现统一收在 api.js 的 inspectSong，
+// 供本模块（列表徽标/换源校验）与 player.js（播放条音质识别）共用。
 
 // 把换到的可播版本同步到卡片 DOM 与队列/卡片数据
 export function applySwitchedSong(card, alt) {
