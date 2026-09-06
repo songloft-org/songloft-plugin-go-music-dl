@@ -7,6 +7,7 @@
     "build": "songloft-plugin build",
     "dev": "songloft-plugin dev",
     "validate": "songloft-plugin validate",
+    "test": "esbuild src/client.ts --bundle --format=esm --outfile=tests/.gen/client.mjs && esbuild src/bridge-contract.ts --bundle --format=esm --outfile=tests/.gen/contract.mjs && node --test \"tests/*.test.mjs\"",
     "publish:release": "songloft-plugin publish"
   },
   "devDependencies": {

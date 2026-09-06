@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Go Music DL</title>
     <link rel="icon" type="image/svg+xml" href="static/icon.svg">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0" />
+    <!-- 图标字体已子集化并内联进 style.css（不再访问 fonts.googleapis.com，离线/国内可用） -->
     <link rel="stylesheet" href="static/css/style.css">
     <style>
         /* 主题变量（自包含，对齐主程序 Material 配色）：
@@ -300,7 +300,7 @@
                     <div class="form-group">
                         <label class="form-label">go-music-dl 服务地址</label>
                         <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">内网 / 默认</div>
-                        <input type="text" class="text-field" id="configBaseUrl" placeholder="http://127.0.0.1:58091">
+                        <input type="text" class="text-field" id="configBaseUrl" placeholder="http://192.168.1.190:8080">
                         <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（插件会自动补 /music）</div>
                         <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">外网访问地址（可选）</div>
                         <input type="text" class="text-field" id="configExternalBaseUrl" placeholder="https://你的公网域名:端口">

@@ -2,3 +2,6 @@ node_modules/
 dist/
 .DS_Store
 .agents
+
+# 单测转译产物
+tests/.gen/

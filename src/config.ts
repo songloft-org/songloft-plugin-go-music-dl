@@ -2,7 +2,7 @@
 // 运行时由 Songloft 注入全局 songloft，这里仅做类型引用。
 
 export interface GoMusicDlConfig {
-  /** go-music-dl 内网/默认服务地址（根地址即可，例如 http://你的服务器地址:8080 或 http://127.0.0.1:58091）；插件会自动补 /music 前缀。后端调用与外网访问时未配置外网地址均走它 */
+  /** go-music-dl 内网/默认服务地址（根地址即可，例如 http://192.168.1.190:8080）；插件会自动补 /music 前缀。后端调用与外网访问时未配置外网地址均走它。留空表示未配置（前端各入口会提示填写） */
   baseUrl: string
   /** 外网访问时前端使用的地址（可选）。当主程序通过公网域名/IP 被外网访问时，前端自动改用此地址直连 go-music-dl；留空则内外网都用 baseUrl */
   externalBaseUrl?: string
@@ -12,8 +12,6 @@ export interface GoMusicDlConfig {
   serverHost?: string
   /** 参与搜索的音源列表 */
   sources: string[]
-  /** 请求超时时间（毫秒），目前仅作记录，沙箱内未强制中断 */
-  timeout: number
 }
 
 const CONFIG_KEY = 'gomusicdl_config'
@@ -25,10 +23,11 @@ const DEFAULT_SOURCES = [
 ]
 
 const DEFAULT_CONFIG: GoMusicDlConfig = {
-  baseUrl: 'http://127.0.0.1:58091',
+  // 不预置地址：127.0.0.1:58091 是宿主 Songloft 的端口而非 go-music-dl 的，
+  // 预置会让首次使用的用户误以为已就绪；留空时前端各入口会提示填写。
+  baseUrl: '',
   externalBaseUrl: '',
   sources: [...DEFAULT_SOURCES],
-  timeout: 15000,
 }
 
 /**

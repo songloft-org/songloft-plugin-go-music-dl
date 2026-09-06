@@ -11,7 +11,7 @@ export async function loadConfig() {
     /* 使用默认值 */
   }
   // 拆分内外网地址：internalBaseUrl 为用户配置的内网/默认地址，externalBaseUrl 可选
-  const internal = store.config.baseUrl || 'http://127.0.0.1:58091'
+  const internal = store.config.baseUrl || ''
   const external = store.config.externalBaseUrl || ''
   store.config.internalBaseUrl = internal
   store.config.externalBaseUrl = external
@@ -90,7 +90,6 @@ export async function saveConfig() {
       serverHost,
       sources,
       defaultQuality,
-      timeout: store.config.timeout || 15000,
     })
     showSnackbar('配置已保存')
     testConnection()

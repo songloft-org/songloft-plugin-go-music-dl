@@ -1,3 +1,32 @@
+/* Material Symbols Outlined 图标字体：仅含本插件用到的 10 个图标
+   （add / keyboard_arrow_down / library_add / music_note / pause / play_arrow /
+     skip_next / skip_previous / volume_off / volume_up）。
+   经 Google Fonts css2 API 的 icon_names 子集化后 base64 内联——避免运行时访问
+   fonts.googleapis.com（国内/离线环境图标会裂成英文字面量）。新增图标时需重新生成子集。 */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url(data:font/woff2;base64,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) format('woff2');
+}
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
 /* GD Studio 插件样式：CSS 变量、reset、body 和字体由主程序 common.css 提供 */
 
 /* AppBar */

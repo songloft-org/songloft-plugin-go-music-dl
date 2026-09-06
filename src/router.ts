@@ -303,23 +303,23 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
   if (!sourceData || typeof sourceData !== 'object') {
     return jsonResponse({ error: 'source_data is required' }, 400)
   }
-    const config = await getConfig()
-    const song = sourceData as unknown as GoSong
-    try {
-      const url = buildDownloadUrl(
-        {
-          id: String(song.id),
-          source: String(song.source),
-          name: String(song.name || ''),
-          artist: String(song.artist || ''),
-          album: String(song.album || ''),
-          cover: String(song.cover || ''),
-          duration: Number(song.duration) || 0,
-          extra: (song.extra as Record<string, any>) || {},
-        },
-        config.baseUrl,
-        true, // embed=1：宿主播放/下载都走「完整下载再回吐」，避免断流导致下载失败
-      )
+  const config = await getConfig()
+  const song = sourceData as unknown as GoSong
+  try {
+    const url = buildDownloadUrl(
+      {
+        id: String(song.id),
+        source: String(song.source),
+        name: String(song.name || ''),
+        artist: String(song.artist || ''),
+        album: String(song.album || ''),
+        cover: String(song.cover || ''),
+        duration: Number(song.duration) || 0,
+        extra: (song.extra as Record<string, any>) || {},
+      },
+      config.baseUrl,
+      true, // embed=1：宿主播放/下载都走「完整下载再回吐」，避免断流导致下载失败
+    )
     if (!url) {
       return jsonResponse({ error: 'source_not_available' }, 404)
     }
@@ -378,8 +378,8 @@ async function makeDirectStreamUrl(song: GoSong): Promise<string | null> {
     // 2) baseUrl 的 host（非回环时最稳：go-music-dl 后端在 LAN 上即代表 Songloft 也在该 IP 可达）
     let baseHost = ''
     try {
-      const h = new URL(config.baseUrl).host // 形如 192.168.1.190:8080
-      baseHost = h.split(':')[0]
+      // hostname 不带端口且 IPv6 已去方括号（host.split(':') 会把 IPv6 截成 '['）
+      baseHost = new URL(config.baseUrl).hostname
     } catch {
       /* ignore */
     }
@@ -713,6 +713,9 @@ router.post('/import', async (req: HTTPRequest) => {
   try {
     // 导入前校验音源是否真正可取流，拦掉前端 inspect 误判的失效歌曲
     const config = await getConfig()
+    if (!config.baseUrl) {
+      return jsonResponse({ error: '服务地址未配置，请先在插件设置中填写' }, 400)
+    }
     const probe = await probeDownloadable(body.item, config)
     if (probe === 'dead') {
       return jsonResponse(

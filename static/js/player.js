@@ -1,6 +1,7 @@
 // player.js — 播放队列 + 音频 + 进度
 import {
   store,
+  cardData,
   effectiveQuality,
   FALLBACK_COVER,
 } from './state.js'
@@ -287,7 +288,12 @@ export function nextSong() {
 }
 
 export function highlightCurrentInList() {
-  document.querySelectorAll('#browserList .song-row, #mySongsList .song-row').forEach((el, i) => {
-    el.style.background = i === store.currentIndex ? 'rgba(99,102,241,.10)' : ''
+  document.querySelectorAll('#browserList .song-row, #mySongsList .song-row').forEach((el) => {
+    // 只高亮当前可见的列表：隐藏列表（ inactive tab / 被浮层盖住的详情页外层）里
+    // 同序号的行不应被误标。用 cardData 里记录的队列索引比对，而非遍历序号——
+    // 两个列表拼接遍历时 i 会跨列表累加，隐藏列表的行号整体偏移。
+    if (el.offsetParent === null) return
+    const d = cardData.get(el)
+    el.style.background = d && d.index === store.currentIndex ? 'rgba(99,102,241,.10)' : ''
   })
 }

@@ -54,6 +54,16 @@ async function onDeinit(): Promise<void> {
   } catch {
     /* ignore */
   }
+  // 主动向 miot 注销「外部搜索源候选」：miot 侧 installed/active 校验虽会过滤失效项，
+  // 但显式注销可避免插件禁用后残留陈旧条目（comm 不存在时静默跳过）
+  try {
+    const comm = (globalThis as any).songloft?.comm
+    if (comm && typeof comm.call === 'function') {
+      await comm.call('miot', 'unregister-search-provider', {})
+    }
+  } catch {
+    /* miot 未安装 / 宿主无 comm：忽略 */
+  }
   console.log('[Go Music DL Plugin] Unmounted')
 }
 
