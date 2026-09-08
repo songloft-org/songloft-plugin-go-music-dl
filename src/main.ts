@@ -54,16 +54,10 @@ async function onDeinit(): Promise<void> {
   } catch {
     /* ignore */
   }
-  // 主动向 miot 注销「外部搜索源候选」：miot 侧 installed/active 校验虽会过滤失效项，
-  // 但显式注销可避免插件禁用后残留陈旧条目（comm 不存在时静默跳过）
-  try {
-    const comm = (globalThis as any).songloft?.comm
-    if (comm && typeof comm.call === 'function') {
-      await comm.call('miot', 'unregister-search-provider', {})
-    }
-  } catch {
-    /* miot 未安装 / 宿主无 comm：忽略 */
-  }
+  // 这里**不**向 miot 注销「外部搜索源候选」：
+  // 宿主空闲驱逐（约 10 分钟无活动）也会触发 onDeinit，注销会删掉 miot 注册表里的条目，
+  // 表现为设置页候选消失、必须点一次插件重新 onInit 才回来。
+  // 禁用/卸载场景由 miot 侧的 installed/active 过滤兜底，无需插件自删。
   console.log('[Go Music DL Plugin] Unmounted')
 }
 
