@@ -117,8 +117,16 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
       return jsonResponse({ error: 'invalid json body' }, 400)
     }
   }
-  const sourceData = body.source_data as Record<string, unknown> | undefined
-  if (!sourceData || typeof sourceData !== 'object') {
+  let sourceData: Record<string, unknown> | undefined =
+    body.source_data as Record<string, unknown> | undefined
+  if (typeof sourceData === 'string') {
+    try {
+      sourceData = JSON.parse(sourceData) as Record<string, unknown>
+    } catch {
+      sourceData = undefined
+    }
+  }
+  if (!sourceData || typeof sourceData !== 'object' || Array.isArray(sourceData)) {
     return jsonResponse({ error: 'source_data is required' }, 400)
   }
   const config = await getConfig()
@@ -374,7 +382,7 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
         cover_url: s.cover || '',
         url: directUrl || '',
         plugin_entry_path: 'go-music-dl',
-        source_data: JSON.stringify({
+        source_data: {
           id: s.id,
           source: s.source,
           name: s.name,
@@ -383,7 +391,7 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
           duration: s.duration,
           cover: s.cover,
           extra: s.extra,
-        }),
+        },
         dedup_key: `go-music-dl_${s.source}_${s.id}`,
       },
     })

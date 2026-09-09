@@ -139,6 +139,10 @@ export async function loadRecommend() {
     const sources = (store.config.sources && store.config.sources.length) ? store.config.sources : ALL_SOURCES
     const url = `${base}/recommend?sources=${sources.map(encodeURIComponent).join('&sources=')}`
     const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    if (res.status === 401) {
+      listEl.innerHTML = '<div class="empty-state">go-music-dl 启用了登录鉴权，请改用无需鉴权的地址</div>'
+      return
+    }
     if (!res.ok) {
       listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
       return

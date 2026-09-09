@@ -450,12 +450,21 @@ async function importSongsBatchIntoLibrary(songs) {
     duration: s.duration,
     extra: s.extra || {},
   }))
-  const r = await API.importBatch(items)
-  if (!r || !r.success) throw new Error('批量导入失败')
-  const imported = Array.isArray(r.songs) ? r.songs : []
-  const failed = Array.isArray(r.failed) ? r.failed : []
+  let r
+  try {
+    r = await API.importBatch(items)
+  } catch (e) {
+    // 后端全部音源失效返回 409 { error, failed }，fetchAuth 会把 error 文案抛出。
+    // 含「全部音源失效」时上层专用分支提示「未创建歌单」，这里原样透传；
+    // 其余（网络/鉴权）归为通用失败，避免吞掉真实错误。
+    const msg = (e && e.message) || ''
+    if (msg.indexOf('全部音源失效') >= 0) throw e
+    throw new Error(friendlyError(e, '批量导入失败'))
+  }
+  const imported = Array.isArray(r && r.songs) ? r.songs : []
+  const failed = Array.isArray(r && r.failed) ? r.failed : []
   if (!imported.length) {
-    const names = failed.map((f) => f.name).filter(Boolean).join('、')
+    const names = failed.map((f) => f.name).filter(Boolean).slice(0, 5).join('、')
     throw new Error('全部音源失效' + (names ? `：${names}` : ''))
   }
   return { songs: imported, failed }

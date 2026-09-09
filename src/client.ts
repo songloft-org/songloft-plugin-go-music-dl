@@ -233,6 +233,8 @@ export interface Pagination {
   total: number
   pageStart: number
   pageEnd: number
+  /** true=从 HTML 真实解析到分页摘要；false=未解析到，按兜底返回（总页数未知） */
+  inferred: boolean
 }
 
 export function parsePagination(html: string): Pagination {
@@ -246,10 +248,12 @@ export function parsePagination(html: string): Pagination {
       pageStart: Number(m[3]) || 0,
       pageEnd: Number(m[4]) || 0,
       total: Number(m[5]) || 0,
+      inferred: true,
     }
   }
-  // 无 page-summary（结果为空，或只有一页且模板未渲染摘要）时的兜底
-  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0 }
+  // 无 page-summary：总页数未知，调用方须依赖「下一页为空」来终止，
+  // 否则多页歌单会被误判为单页而静默丢歌（见 import-core/sync 的跨页抓取）
+  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0, inferred: false }
 }
 
 /**

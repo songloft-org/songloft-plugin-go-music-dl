@@ -176,7 +176,9 @@ async function fetchRemoteSongs(
     if (!songs.length) break
     all.push(...songs)
     const p = parsePagination(html)
-    if (!p || !p.totalPages || p.page >= p.totalPages) break
+    // 真实解析到分页摘要且已到末页才停；摘要缺失（inferred=false）时总页数未知，
+    // 继续翻页直到下一页为空（上方 !songs.length 终止），避免多页歌单静默丢歌
+    if (p.inferred && p.totalPages && p.page >= p.totalPages) break
   }
   return all
 }

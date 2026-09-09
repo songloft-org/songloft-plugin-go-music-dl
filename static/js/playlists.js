@@ -148,10 +148,12 @@ export function parsePagination(html) {
       pageStart: Number(m[3]) || 0,
       pageEnd: Number(m[4]) || 0,
       total: Number(m[5]) || 0,
+      inferred: true,
     }
   }
-  // 摘要未渲染（单页歌单，renderIndex 在 totalPages=1 时不输出 page-summary）
-  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0 }
+  // 摘要未渲染（单页歌单，或详情页模板未输出 page-summary）：总页数未知，
+  // 调用方须依赖「下一页为空」终止，避免多页歌单静默丢歌（见 renderCollectionPagination）
+  return { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0, inferred: false }
 }
 
 export function renderPlaylistRow(pl) {
@@ -388,45 +390,52 @@ function parseCollectionHeader(html) {
   return { countText, summaryText }
 }
 
-// 渲染歌单/专辑详情翻页条（与搜索页分页 UI 一致），单页或解析失败时隐藏
+// 渲染歌单/专辑详情翻页条（与搜索页分页 UI 一致）
 function renderCollectionPagination(p) {
   const pager = document.getElementById('collectionPager')
   if (!pager) return
-  if (!p || !p.total || p.totalPages <= 1) {
-    hideCollectionPager()
-    return
+  // 解析不到分页摘要（inferred=false）：总页数未知，详情页仍允许翻下一页，
+  // 避免多页歌单看不到后续（下一页为空时 openCollection 显示空态）；
+  // 已解析到真实摘要且只有一页时则隐藏翻页条。
+  const unknown = !p || p.inferred === false
+  if (!p || p.totalPages <= 1) {
+    if (!unknown) {
+      hideCollectionPager()
+      return
+    }
   }
+  const page = p ? p.page : 1
   pager.innerHTML = ''
   const prev = document.createElement('button')
   prev.type = 'button'
   prev.className = 'ctrl-btn primary'
   prev.innerHTML = '‹ 上一页'
-  prev.disabled = p.page <= 1
+  prev.disabled = page <= 1
   prev.onclick = () =>
     currentCollection &&
     openCollection(
       currentCollection.pl,
       currentCollection.endpoint,
       currentCollection.showImport,
-      p.page - 1,
+      page - 1,
     )
 
   const text = document.createElement('span')
   text.className = 'pagination-text'
-  text.textContent = `第 ${p.page} / ${p.totalPages} 页`
+  text.textContent = unknown ? `第 ${page} 页` : `第 ${page} / ${p.totalPages} 页`
 
   const next = document.createElement('button')
   next.type = 'button'
   next.className = 'ctrl-btn primary'
   next.innerHTML = '下一页 ›'
-  next.disabled = p.page >= p.totalPages
+  next.disabled = unknown ? false : page >= p.totalPages
   next.onclick = () =>
     currentCollection &&
     openCollection(
       currentCollection.pl,
       currentCollection.endpoint,
       currentCollection.showImport,
-      p.page + 1,
+      page + 1,
     )
 
   pager.appendChild(prev)
