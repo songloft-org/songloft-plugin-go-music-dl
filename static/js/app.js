@@ -21,8 +21,15 @@ import {
 } from './fullscreen.js'
 import { testConnection, switchSource } from './api.js'
 import { applySwitchedSong } from './songlist.js'
-import { showSnackbar } from './util.js'
+import { showSnackbar, hideSnackbar } from './util.js'
 import { loadConfig, saveConfig, setAllSources, autoFillServerHost } from './config.js'
+import {
+  openSyncPanel,
+  closeSyncPanel,
+  selectAllSync,
+  selectUnsyncedSync,
+  runSync,
+} from './syncPanel.js'
 import {
   doSearch,
   loadRecommend,
@@ -150,6 +157,9 @@ function initPlayer() {
   window.createNewPlaylist = createNewPlaylist
   window.closeNewPlaylistDialog = closeNewPlaylistDialog
   window.confirmNewPlaylist = confirmNewPlaylist
+  // 歌单同步面板（内联 onclick：backdrop 关闭）
+  window.openSyncPanel = openSyncPanel
+  window.closeSyncPanel = closeSyncPanel
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -254,6 +264,17 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
   document.getElementById('backToPlaylistsBtn').onclick = backToPlaylists
+  // 歌单同步面板：入口按钮 + 面板内快捷选择/开始同步
+  const syncEntryBtn = document.getElementById('openSyncPanelBtn')
+  if (syncEntryBtn) syncEntryBtn.onclick = openSyncPanel
+  const syncSelAllBtn = document.getElementById('syncSelAllBtn')
+  if (syncSelAllBtn) syncSelAllBtn.onclick = selectAllSync
+  const syncSelUnsyncedBtn = document.getElementById('syncSelUnsyncedBtn')
+  if (syncSelUnsyncedBtn) syncSelUnsyncedBtn.onclick = selectUnsyncedSync
+  const syncRunBtn = document.getElementById('syncRunBtn')
+  if (syncRunBtn) syncRunBtn.onclick = runSync
+  const syncCloseBtn = document.getElementById('syncCloseBtn')
+  if (syncCloseBtn) syncCloseBtn.onclick = closeSyncPanel
   // 歌单详情页「导入歌单」：整张歌单一次性批量导入（秒级，替代逐首串行）
   const importCollectionBtn = document.getElementById('importCollectionBtn')
   if (importCollectionBtn) importCollectionBtn.onclick = importEntireCollection

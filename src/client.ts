@@ -419,3 +419,59 @@ export async function fetchLyric(
     return ''
   }
 }
+
+/**
+ * 拉取 go-music-dl 已登录账号的个人歌单页（HTML）。
+ * 仅 netease/qq/kugou/soda 支持账号歌单（core.GetUserPlaylistSourceNames），
+ * 全部要求 go-music-dl 网页端已扫码登录（cookie 在 go-music-dl 侧）。
+ * 与前端「我的歌单」同源同实现（前端 playlists.js 用 DOMParser 解析，
+ * 后端 QuickJS 无 DOM，用 parseSongCards 同构的正则通道）。
+ */
+export async function fetchUserPlaylistsHtml(
+  config: GoMusicDlConfig,
+  sources?: string[],
+): Promise<string> {
+  const base = normalizeBaseUrl(config.baseUrl)
+  const list =
+    sources && sources.length
+      ? sources
+      : config.sources && config.sources.length
+        ? config.sources
+        : DEFAULT_SOURCES
+  const params = list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
+  return fetchText(`${base}/user_playlists?${params}`)
+}
+
+/**
+ * 分页拉取歌单/专辑详情页（HTML）。卡片与搜索结果同为 .song-card 结构
+ * （go-music-dl 共用 partials/song_list.html 模板），用 parseSongCards 解析。
+ */
+export async function fetchCollectionSongsPage(
+  config: GoMusicDlConfig,
+  collection: { id: string; source: string },
+  page = 1,
+): Promise<string> {
+  const base = normalizeBaseUrl(config.baseUrl)
+  const url =
+    `${base}/playlist` +
+    `?id=${encodeURIComponent(collection.id)}` +
+    `&source=${encodeURIComponent(collection.source)}` +
+    `&page=${page}`
+  return fetchText(url)
+}
+
+/**
+ * 把音源原始封面 CDN 地址转成 go-music-dl /music/cover_proxy 代理地址，
+ * 规避网易云/QQ 等封面的防盗链 403。与前端 api.js buildCoverUrl 同实现
+ * （QuickJS/WebView 无法共享模块，两处需同步），宿主 GetPlaylistCover 仅在
+ * CoverURL 非空时代理转发，故创建同步歌单时显式带上该地址。
+ */
+export function buildCoverProxyUrl(rawCover: string, baseUrl: string): string {
+  if (!rawCover) return ''
+  if (/^(data:|blob:)/i.test(rawCover)) return rawCover
+  const base = normalizeBaseUrl(baseUrl)
+  if (!base) return rawCover
+  if (rawCover.startsWith(base)) return rawCover // 已是本实例代理地址
+  return `${base}/cover_proxy?url=${encodeURIComponent(rawCover)}`
+}
+

@@ -11,22 +11,21 @@ import {
   searchSongsPage,
   searchCollectionsPage,
   buildDownloadUrl,
-  buildInspectUrl,
   fetchLyric,
   GoSong,
 } from './client'
 import { encodeToken, decodeToken, loopbackToLan } from './bridge-contract'
-
-interface SongItem {
-  id: string
-  name: string
-  artist: string
-  album: string
-  cover: string
-  source: string
-  duration: number
-  extra: Record<string, any>
-}
+import { callHostApi } from './host'
+import {
+  probeDownloadable,
+  resolveImportableItem,
+  importRemoteSongs,
+  importRemoteSong,
+  BATCH_DEADLINE_MS,
+  mapWithConcurrency,
+} from './import-core'
+import type { SongItem } from './import-core'
+import { syncOne, listBindings } from './sync'
 
 function toSearchItem(s: GoSong): SearchResultItem {
   return {
@@ -78,187 +77,6 @@ function parseBody(req: HTTPRequest): any {
 
 interface DownloadRequest {
   item?: SongItem
-}
-
-function toRemoteSongRequest(item: SongItem) {
-  return {
-    title: item.name,
-    artist: item.artist || 'Unknown',
-    album: item.album || '',
-    cover_url: item.cover || '',
-    duration: item.duration,
-    plugin_entry_path: 'go-music-dl',
-    source_data: JSON.stringify({
-      id: item.id,
-      source: item.source,
-      name: item.name,
-      artist: item.artist,
-      album: item.album,
-      duration: item.duration,
-      cover: item.cover,
-      extra: item.extra,
-    }),
-    dedup_key: `go-music-dl_${item.source}_${item.id}`,
-  }
-}
-
-// 导入前校验：打 go-music-dl /music/inspect 做轻量可达性探测——服务端仅对上游发
-// Range 0-1 两字节请求，返回 JSON { valid, url, size, bitrate }，与前端 inspectSong
-// 判「可播」是同一套依据，前端徽标与后端导入校验从此不再可能分叉。
-// 历史教训：早期用 download?stream=1 探测，而宿主 QuickJS fetch 会把响应体整曲读进
-// 内存（上限 64MiB/首），批量导入时等于把每首歌都过一遍宿主内存，带宽/内存代价巨大。
-// 返回：'ok' 可导入 / 'dead' 确属失效需拒绝 / 'unknown' 网络抖动等不确定，放行以免误杀
-// （含 inspect 端点 404/5xx、200+非 JSON 等接口级异常——那是 go-music-dl 的问题，
-//  不是「这首歌失效」的证据，不能据此判死）。
-async function probeDownloadable(
-  item: SongItem,
-  config: GoMusicDlConfig,
-  deadline?: { hit: boolean },
-): Promise<'ok' | 'dead' | 'unknown'> {
-  if (deadline?.hit) return 'unknown'
-  const url = buildInspectUrl(
-    {
-      id: String(item.id),
-      source: String(item.source),
-      name: String(item.name || ''),
-      artist: String(item.artist || ''),
-      album: String(item.album || ''),
-      cover: String(item.cover || ''),
-      duration: Number(item.duration) || 0,
-      extra: (item.extra as Record<string, any>) || {},
-    },
-    config.baseUrl,
-  )
-  if (!url) return 'dead' // baseUrl 为空：与旧口径一致按不可用处理（/import/batch 另有显式 400）
-  const timeout = new Promise<'unknown'>((resolve) =>
-    setTimeout(() => resolve('unknown'), 8000),
-  )
-  try {
-    const res: any = await Promise.race([
-      fetch(url, {
-        method: 'GET',
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
-      }),
-      timeout,
-    ])
-    // 超时分支返回的是字符串 'unknown'，直接放行（inspect 上游自带 5s 上限，8s 是余量）
-    if (typeof res.status !== 'number') return 'unknown'
-    if (!res.ok) return 'unknown'
-    const j: any = await res.json().catch(() => null)
-    if (!j || typeof j.valid !== 'boolean') return 'unknown'
-    return j.valid ? 'ok' : 'dead'
-  } catch {
-    return 'unknown'
-  }
-}
-
-// 并发受限遍历：避免一次性 100 个探测请求打爆 go-music-dl。
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  limit: number,
-  fn: (t: T) => Promise<R>,
-): Promise<R[]> {
-  const ret: R[] = new Array(items.length)
-  let i = 0
-  async function worker() {
-    while (i < items.length) {
-      const idx = i++
-      ret[idx] = await fn(items[idx])
-    }
-  }
-  const n = Math.max(1, Math.min(limit, items.length))
-  await Promise.all(Array.from({ length: n }, () => worker()))
-  return ret
-}
-
-// 批量导入整体时限：网关通常 60s 超时，留余量；超时则把已探明可播的歌
-// 先写库、未完成（多为换源/失效歌）计入 failed，避免整批被网关 504 掐断。
-const BATCH_DEADLINE_MS = 50000
-
-// 对单首做「下载可达性探测」判定：可导入返回 item，否则返回失效原因。
-// 不尝试换源救回：换过源/失效的歌直接判 dead 丢弃，避免调用 go-music-dl
-// /switch_source（极慢且常卡死）把整批拖到网关 504、连正常歌也一起丢失。
-// 用户诉求是「失效歌直接不要，只导入有效歌」，故这里不求救回。
-// 'unknown'（网络抖动/超时）放行，避免误杀慢速但有效的音源。
-async function resolveImportableItem(
-  item: SongItem,
-  config: GoMusicDlConfig,
-  deadline?: { hit: boolean },
-): Promise<{ item?: SongItem; reason?: string }> {
-  if (deadline?.hit) return { reason: 'timeout' }
-  const probe = await probeDownloadable(item, config, deadline)
-  if (probe === 'dead') return { reason: 'dead' }
-  // 超时且未确认可播：保守归入失败，不把不确定歌塞进曲库
-  if (deadline?.hit && probe !== 'ok') return { reason: 'timeout' }
-  return { item }
-}
-
-// 把一批歌曲作为 remote 歌曲一次性写进 Songloft 曲库（含 source_data）。
-// 宿主 /api/v1/songs/remote 本就支持数组批量写入，这里按块切分，避免单请求体过大。
-// 返回宿主创建的歌曲数组（含 id）。
-async function importRemoteSongs(items: SongItem[]): Promise<any[]> {
-  // 过滤缺 id/name 的非法项，避免个别坏歌（如解析异常的换源歌）整批否决、
-  // 把正常歌一起拖崩（保证正常歌稳定进库）。全部非法才报错。
-  const valid = items.filter((it) => it && it.id && it.name)
-  if (!valid.length) {
-    throw new Error('Invalid download item')
-  }
-  const hostUrl = await (globalThis as any).songloft.plugin.getHostUrl()
-  const token = await (globalThis as any).songloft.plugin.getToken()
-  const out: any[] = []
-  const CHUNK = 50
-  for (let i = 0; i < valid.length; i += CHUNK) {
-    const chunk = valid.slice(i, i + CHUNK).map(toRemoteSongRequest)
-    const res = await fetch(`${hostUrl}/api/v1/songs/remote`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(chunk),
-    })
-    if (!res.ok) {
-      throw new Error(`Import failed: ${await res.text()}`)
-    }
-    const data = await res.json()
-    const songs = Array.isArray(data.songs) ? data.songs : []
-    if (!songs.length || typeof songs[0].id !== 'number') {
-      throw new Error('Import response missing song id')
-    }
-    out.push(...songs)
-  }
-  return out
-}
-
-async function importRemoteSong(item: SongItem): Promise<any> {
-  const songs = await importRemoteSongs([item])
-  return songs[0]
-}
-
-// 代理宿主 API：用插件运行时拿到的宿主绝对地址 + token 调用，
-// 避免前端直连时因 common.js 的 API_BASE='.' 把 /api/v1 拼成相对路径而 404。
-async function callHostApi(
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<any> {
-  const hostUrl = await (globalThis as any).songloft.plugin.getHostUrl()
-  const token = await (globalThis as any).songloft.plugin.getToken()
-  const res = await fetch(`${hostUrl}${path}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) {
-    throw new Error(
-      `Host API ${method} ${path} failed: ${await res.text()}`,
-    )
-  }
-  const text = await res.text()
-  return text ? JSON.parse(text) : null
 }
 
 const router = createRouter()
@@ -848,6 +666,61 @@ router.post('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
       'POST',
       `/api/v1/playlists/${params.id}/songs`,
       data,
+    )
+    return jsonResponse(result)
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
+  }
+})
+
+// ---------- 歌单手动同步（单向：go-music-dl 账号歌单 → Songloft 本地歌单） ----------
+// 设计与流程见 src/sync.ts 头注释与 README「歌单同步」章节。
+
+// 绑定列表：前端同步面板渲染「已绑定/上次同步时间」用
+router.get('/sync/bindings', async () => {
+  const bindings = await listBindings()
+  return jsonResponse({ bindings })
+})
+
+// 同步单张远端歌单（前端面板逐张串行调用，单张失败不阻断后续）。
+// body: { source, id, name?, cover? }（name/cover 由前端从 user_playlists 卡片带上，
+// 用于本地歌单命名与封面；后端不再解析 user_playlists HTML）
+router.post('/sync/run', async (req: HTTPRequest) => {
+  const body = parseBody(req) as {
+    source?: string
+    id?: string
+    name?: string
+    cover?: string
+  }
+  const source = String(body.source || '').trim()
+  const id = String(body.id || '').trim()
+  if (!source || !id) {
+    return jsonResponse({ error: 'source and id are required' }, 400)
+  }
+  try {
+    const result = await syncOne({
+      source,
+      id,
+      name: body.name ? String(body.name) : undefined,
+      cover: body.cover ? String(body.cover) : undefined,
+    })
+    return jsonResponse({ result })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
+  }
+})
+
+// 宿主歌单歌曲列表代理（同步面板展示绑定歌单详情 / 调试用）。
+// 强制放大 limit 一次拉全量（宿主该接口 limit 无钳制，见 handlers/playlist.go）。
+router.get('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
+  try {
+    if (!params.id || !/^\d+$/.test(params.id)) {
+      return jsonResponse({ error: '无效的歌单 id' }, 400)
+    }
+    const query = req.query ? `${req.query}&limit=10000` : 'limit=10000'
+    const result = await callHostApi(
+      'GET',
+      `/api/v1/playlists/${params.id}/songs?${query}`,
     )
     return jsonResponse(result)
   } catch (e) {

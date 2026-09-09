@@ -139,6 +139,15 @@ export const API = {
       method: 'POST',
       body: JSON.stringify({ item }),
     }),
+  // ---------- 歌单同步（引擎在后端 src/sync.ts） ----------
+  // 绑定列表：同步面板渲染「已绑定/上次同步时间」
+  syncBindings: () => fetchAuth('./sync/bindings'),
+  // 同步单张远端歌单（面板串行逐张调用；后端抓详情+diff+幂等入库）
+  syncRun: (pl) =>
+    fetchAuth('./sync/run', {
+      method: 'POST',
+      body: JSON.stringify(pl),
+    }),
 }
 
 // 宿主歌单 API：经插件后端代理（/playlists...）调用，避免 common.js 的

@@ -265,6 +265,7 @@
                 <div class="card">
                     <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
                         <span>我的歌单</span>
+                        <button class="btn-text" id="openSyncPanelBtn" type="button" style="min-height:32px;">同步歌单</button>
                     </div>
                     <div class="card-body">
                         <div class="card-desc" style="margin-bottom:10px;">显示已登录平台中你创建和收藏的歌单。点击下方分类可只看对应平台的歌单。</div>
@@ -408,6 +409,25 @@
       <div class="dialog-footer">
         <button class="btn-text" onclick="closeNewPlaylistDialog()">取消</button>
         <button class="btn-filled" id="confirmNewPlaylist">确定</button>
+      </div>
+    </div>
+
+    <!-- 歌单同步面板：手动同步 go-music-dl 已登录账号的歌单（全量/勾选），引擎在后端 sync.ts。
+         用插件自有 .dialog-overlay + .dialog 体系（fixed 遮罩 + flex 居中），不依赖宿主注入样式 -->
+    <div id="syncOverlay" class="dialog-overlay">
+      <div class="dialog sync-dialog" role="dialog" aria-modal="true">
+        <div class="dialog-title">同步账号歌单</div>
+        <div class="sync-desc">把 go-music-dl 已登录账号的歌单同步到 Songloft（首次导入，此后增量更新）。支持网易云 / QQ / 酷狗 / 汽水。</div>
+        <div class="sync-toolbar">
+          <button class="btn-text" id="syncSelAllBtn" type="button">全选</button>
+          <button class="btn-text" id="syncSelUnsyncedBtn" type="button">仅未同步</button>
+          <span class="sync-count" id="syncSelCount">已选 0 张</span>
+        </div>
+        <div id="syncPlaylistList" class="sync-playlist-list"><div class="empty-state">打开时加载…</div></div>
+        <div class="sync-footer">
+          <button class="btn-text" id="syncCloseBtn" type="button">关闭</button>
+          <button class="btn-filled" id="syncRunBtn" disabled>开始同步</button>
+        </div>
       </div>
     </div>
 
