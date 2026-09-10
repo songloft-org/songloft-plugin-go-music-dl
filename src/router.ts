@@ -25,7 +25,12 @@ import {
   mapWithConcurrency,
 } from './import-core'
 import type { SongItem } from './import-core'
-import { syncOne, listBindings } from './sync'
+import {
+  beginSyncSession,
+  stepSyncSession,
+  SyncSessionNotFound,
+  listBindings,
+} from './sync'
 
 function toSearchItem(s: GoSong): SearchResultItem {
   return {
@@ -683,6 +688,9 @@ router.post('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
 
 // ---------- 歌单手动同步（单向：go-music-dl 账号歌单 → Songloft 本地歌单） ----------
 // 设计与流程见 src/sync.ts 头注释与 README「歌单同步」章节。
+// 协议为「begin + 循环 step」：begin 创建会话并抓首页，前端循环调 step 推进
+// （每步抓一页 / 比对 / 导入一小批），每步返回实时进度 → 前端刷新进度条；
+// 每步都是短请求，稳在网关上限内（前端另带 X-Plugin-Timeout-Ms 放宽头）。
 
 // 绑定列表：前端同步面板渲染「已绑定/上次同步时间」用
 router.get('/sync/bindings', async () => {
@@ -690,10 +698,10 @@ router.get('/sync/bindings', async () => {
   return jsonResponse({ bindings })
 })
 
-// 同步单张远端歌单（前端面板逐张串行调用，单张失败不阻断后续）。
+// 开始同步单张远端歌单：创建会话 + 抓首页（登录失效/网络错误在此快速失败）。
 // body: { source, id, name?, cover? }（name/cover 由前端从 user_playlists 卡片带上，
 // 用于本地歌单命名与封面；后端不再解析 user_playlists HTML）
-router.post('/sync/run', async (req: HTTPRequest) => {
+router.post('/sync/begin', async (req: HTTPRequest) => {
   const body = parseBody(req) as {
     source?: string
     id?: string
@@ -706,14 +714,33 @@ router.post('/sync/run', async (req: HTTPRequest) => {
     return jsonResponse({ error: 'source and id are required' }, 400)
   }
   try {
-    const result = await syncOne({
+    const step = await beginSyncSession({
       source,
       id,
       name: body.name ? String(body.name) : undefined,
       cover: body.cover ? String(body.cover) : undefined,
     })
-    return jsonResponse({ result })
+    return jsonResponse(step)
   } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
+  }
+})
+
+// 推进同步会话一步：body: { sessionId }。返回 { done, phase, ...进度 } 或
+// { done: true, result }。会话失效（运行时重启/超时回收）返回 404 +
+// code=SYNC_SESSION_NOT_FOUND，前端提示重试（已导入部分幂等不丢）。
+router.post('/sync/step', async (req: HTTPRequest) => {
+  const body = parseBody(req) as { sessionId?: string }
+  try {
+    const step = await stepSyncSession(String(body.sessionId || ''))
+    return jsonResponse(step)
+  } catch (e) {
+    if (e instanceof SyncSessionNotFound) {
+      return jsonResponse(
+        { error: String((e as Error)?.message || e), code: 'SYNC_SESSION_NOT_FOUND' },
+        404,
+      )
+    }
     return jsonResponse({ error: String((e as Error)?.message || e) }, 500)
   }
 })

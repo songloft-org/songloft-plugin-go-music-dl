@@ -29,9 +29,9 @@ test('parseSongCards 解析 data-* 属性（含单引号 data-extra JSON）', ()
 
 test('parsePagination 解析中文分页摘要 + 缺摘要兜底', () => {
   const p = parsePagination('当前第 2 / 5 页，显示 31 - 60 / 150')
-  assert.deepEqual(p, { page: 2, totalPages: 5, total: 150, pageStart: 31, pageEnd: 60 })
+  assert.deepEqual(p, { page: 2, totalPages: 5, total: 150, pageStart: 31, pageEnd: 60, inferred: true })
   const empty = parsePagination('<div>没有摘要</div>')
-  assert.deepEqual(empty, { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0 })
+  assert.deepEqual(empty, { page: 1, totalPages: 1, pageStart: 0, pageEnd: 0, total: 0, inferred: false })
 })
 
 test('parsePlaylistCards 解析导入按钮 data-* 序列', () => {

@@ -3498,4 +3498,29 @@ html.embed .gmd-miniplayer { left: 0; }
     background: rgba(239, 68, 68, .12);
     color: #dc2626;
 }
+/* 同步行内进度条：分步同步（begin + 循环 step）时逐批刷新宽度 */
+.sync-progress {
+    margin-top: 5px;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--md-surface-2, #e5e5ea);
+    overflow: hidden;
+}
+.sync-progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: 999px;
+    background: var(--md-primary, #5b5fc7);
+    transition: width .25s ease;
+}
+/* 不确定态（如 go-music-dl 未返回总页数）：滑块往复动画 */
+.sync-progress.indeterminate .sync-progress-fill {
+    width: 30%;
+    transition: none;
+    animation: syncIndeterminate 1.1s ease-in-out infinite;
+}
+@keyframes syncIndeterminate {
+    0% { margin-left: -30%; }
+    100% { margin-left: 100%; }
+}
 

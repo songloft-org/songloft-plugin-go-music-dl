@@ -42,19 +42,24 @@ function getAuthHeaders() {
 }
 
 export async function fetchAuth(url, opts = {}) {
+  // opts.headers 与默认鉴权头合并（而非整体覆盖）：sync/import 等长耗时请求
+  // 需要额外带 X-Plugin-Timeout-Ms 放宽宿主网关的 30s 调用上限，
+  // 若直接展开 opts 会把 Authorization 头挤掉导致 401。
+  const { headers: extraHeaders, ...rest } = opts
   const res = await fetch(url, {
-    headers: getAuthHeaders(),
-    ...opts,
+    ...rest,
+    headers: { ...getAuthHeaders(), ...(extraHeaders || {}) },
   })
   if (res.status === 401) {
     throw new Error('401 未授权：请刷新插件页面后重试')
   }
   if (!res.ok) {
-    // 后端会把真实错误放在 { error: "..." } 里，优先展示它
+    // 后端会把真实错误放在 { error: "...", detail: "..." } 里，优先展示它们
     let msg = `HTTP ${res.status}`
     try {
       const j = await res.json()
       if (j && j.error) msg = j.error
+      if (j && j.detail && j.detail !== j.error) msg += `: ${j.detail}`
     } catch (e) {}
     throw new Error(msg)
   }
@@ -127,9 +132,12 @@ export const API = {
     }),
   // 批量导入：一次请求写整批歌曲（后端抽样校验 + 一次性批量写宿主），
   // 替代逐首串行 /import，把大歌单从「分钟级」压到「秒级」。
+  // X-Plugin-Timeout-Ms：宿主网关默认 30s 就把插件调用掐成 504（上限 300s），
+  // 慢速容错路径（逐首探测）可能超过 30s，显式放宽到 180s（与后端 deadline 匹配）。
   importBatch: (items) =>
     fetchAuth('./import/batch', {
       method: 'POST',
+      headers: { 'X-Plugin-Timeout-Ms': '180000' },
       body: JSON.stringify({ items }),
     }),
   // 音箱投放：让后端为该歌生成指向 /stream/:token 的对外可达直链
@@ -139,14 +147,26 @@ export const API = {
       method: 'POST',
       body: JSON.stringify({ item }),
     }),
-  // ---------- 歌单同步（引擎在后端 src/sync.ts） ----------
+  // ---------- 歌单同步（引擎在后端 src/sync.ts，begin + 循环 step 分步协议） ----------
   // 绑定列表：同步面板渲染「已绑定/上次同步时间」
   syncBindings: () => fetchAuth('./sync/bindings'),
-  // 同步单张远端歌单（面板串行逐张调用；后端抓详情+diff+幂等入库）
-  syncRun: (pl) =>
-    fetchAuth('./sync/run', {
+  // 开始同步单张远端歌单：创建会话 + 抓首页（登录失效/网络错误在此快速失败）。
+  // X-Plugin-Timeout-Ms：宿主网关默认 30s 就把插件调用掐成 504（调度器
+  // defaultCallTimeout=30s，上限 300s），首页抓取最坏可达 30s，放宽到 60s 兜底。
+  syncBegin: (pl) =>
+    fetchAuth('./sync/begin', {
       method: 'POST',
+      headers: { 'X-Plugin-Timeout-Ms': '60000' },
       body: JSON.stringify(pl),
+    }),
+  // 推进同步会话一步（每步抓一页 / 比对 / 导入 16 首），返回实时进度：
+  // { done, phase, pagesDone, totalPages, songsFetched, processed, total, added, dead }
+  // 或 { done: true, result }。前端循环调用并逐步刷新行内进度条。
+  syncStep: (sessionId) =>
+    fetchAuth('./sync/step', {
+      method: 'POST',
+      headers: { 'X-Plugin-Timeout-Ms': '60000' },
+      body: JSON.stringify({ sessionId }),
     }),
 }
 

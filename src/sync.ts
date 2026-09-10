@@ -9,8 +9,10 @@
 //    因此重复同步零副作用。
 // 3. 本地歌单中用户手动添加的非本插件歌曲（dedup_key 为空/不同源）绝不参与 diff，
 //    不会被删除也不会被误判。
-// 4. 探测+批量入库复用 import-core（与 /import/batch 同一套 50s 网关 deadline 策略），
-//    超时截断标记 partial，前端提示「再点一次同步继续」。
+// 4. 探测+批量入库复用 import-core（与 /import/batch 同一套并发策略）。
+//    同步以「begin + 循环 step」分步协议进行（见下方引擎注释）：每步一个短请求，
+//    前端逐步驱动并实时刷新进度条；每步天然远短于宿主网关 30s 默认上限
+//    （前端另带 X-Plugin-Timeout-Ms 放宽头兜底），从根上规避 504。
 
 import type { GoMusicDlConfig } from './config'
 import { getConfig } from './config'
@@ -27,7 +29,6 @@ import {
   resolveImportableItem,
   importRemoteSongs,
   mapWithConcurrency,
-  BATCH_DEADLINE_MS,
 } from './import-core'
 
 // ---------- 类型与常量 ----------
@@ -146,41 +147,53 @@ async function upsertBinding(binding: SyncBinding): Promise<void> {
 // ---------- 远端/本地数据抓取 ----------
 
 /**
- * 跨分页抓取歌单全部歌曲（带单张同步全局 deadline）。
- * - deadline 到点后停止翻页，以已抓到的部分返回 → 已抓部分正常进入 diff，
- *   未抓部分下次再点同步由「本地歌单 dedup_key 真源 diff」自动续传；
+ * 分步抓取：每次调用抓取下一页歌单详情（HTML）并累积到 session.remote。
+ * - 返回 true=本页抓到歌曲、后续还有页；false=抓取结束（末页/空页/翻页中断）；
  * - 登录失效检测（M1）：仅当首页「解析不出任何卡片」且页面命中登录页特征词时才判定，
- *   歌名/摘要含「请输入用户名」等词但首页正常有卡片时绝不误报。
+ *   歌名/摘要含「请输入用户名」等词但首页正常有卡片时绝不误报；
+ * - 翻页中断（page>1 网络错误）：以已抓到的为准（fetchTruncated 标记，下次同步
+ *   由「本地歌单 dedup_key 真源 diff」自动补齐），与旧版整体抓取语义一致。
  */
-async function fetchRemoteSongs(
-  config: GoMusicDlConfig,
-  pl: RemotePlaylistRef,
-  deadline: { hit: boolean },
-): Promise<GoSong[]> {
-  const all: GoSong[] = []
-  for (let page = 1; page <= MAX_PAGES; page++) {
-    if (deadline.hit) break
-    let html: string
-    try {
-      html = await fetchCollectionSongsPage(config, pl, page)
-    } catch (e) {
-      if (page === 1) throw e // 首页网络错误原样上抛（401/连接失败等）
-      break // 翻页中断：以已抓到的为准（下次同步 diff 自动补齐）
-    }
-    const songs = parseSongCards(html)
-    if (page === 1 && songs.length === 0 && AUTH_PAGE_RE.test(html)) {
-      throw new Error(
-        'go-music-dl 登录已失效（接口返回登录页），请到 go-music-dl 网页端重新扫码登录后再同步',
-      )
-    }
-    if (!songs.length) break
-    all.push(...songs)
-    const p = parsePagination(html)
-    // 真实解析到分页摘要且已到末页才停；摘要缺失（inferred=false）时总页数未知，
-    // 继续翻页直到下一页为空（上方 !songs.length 终止），避免多页歌单静默丢歌
-    if (p.inferred && p.totalPages && p.page >= p.totalPages) break
+async function fetchNextPage(s: SyncSession): Promise<boolean> {
+  if (s.fetchDone) return false
+  if (s.page > MAX_PAGES) {
+    s.fetchDone = true
+    return false
   }
-  return all
+  let html: string
+  try {
+    html = await fetchCollectionSongsPage(s.config, s.pl, s.page)
+  } catch (e) {
+    if (s.page === 1) throw e // 首页网络错误原样上抛（401/连接失败等）
+    s.fetchTruncated = true // 翻页中断：以已抓到的为准（下次同步 diff 自动补齐）
+    s.fetchDone = true
+    return false
+  }
+  const songs = parseSongCards(html)
+  if (s.page === 1 && songs.length === 0 && AUTH_PAGE_RE.test(html)) {
+    throw new Error(
+      'go-music-dl 登录已失效（接口返回登录页），请到 go-music-dl 网页端重新扫码登录后再同步',
+    )
+  }
+  if (!songs.length) {
+    s.fetchDone = true
+    return false
+  }
+  s.remote.push(...songs)
+  const p = parsePagination(html)
+  if (p.inferred && p.totalPages) {
+    s.totalPages = s.totalPages
+      ? Math.max(s.totalPages, p.totalPages)
+      : p.totalPages
+  }
+  // 真实解析到分页摘要且已到末页才停；摘要缺失（inferred=false）时总页数未知，
+  // 继续翻页直到下一页为空（上方 !songs.length 终止），避免多页歌单静默丢歌
+  if (p.inferred && p.totalPages && p.page >= p.totalPages) {
+    s.fetchDone = true
+    return false
+  }
+  s.page++
+  return true
 }
 
 /**
@@ -274,164 +287,257 @@ export interface SyncOneResult {
   added: number
   /** 确认失效被丢弃的歌数 */
   dead: number
-  /** 因 50s deadline 截断未处理完的歌数（>0 即 partial，重试续传） */
+  /** 未成功处理完的歌数（>0 即 partial：本 chunk 作废，重试 diff 自动补齐） */
   pending: number
   message?: string
 }
 
 /**
- * 同步单张远端歌单：
- * 抓远端全量 → 解析/创建本地歌单 → diff 新增 → 探测+批量入库 → 幂等加歌单 → 更新绑定。
- * 任一环节失败都以 partial/failed 返回而非抛异常中断（错误信息进 result.message），
+ * 分步同步引擎（begin + step，替代旧版一次性 /sync/run 长请求）：
+ * 前端先调 beginSyncSession 创建会话（含首页抓取，登录失效等错误在此快速失败），
+ * 然后循环调 stepSyncSession，每步只推进一个「最小工作单元」并返回实时进度——
+ *   fetch 阶段：抓 1 页远端歌单（前端显示「第 p/P 页 · 已读 n 首」）；
+ *   prepare 阶段：解析/创建本地歌单 + 拉本地 dedup_key + diff 新增（一步，秒级）；
+ *   import 阶段：每步探测+入库+加歌单 SYNC_STEP_CHUNK 首（前端显示 m/total 进度条）。
+ * 设计动机：
+ * 1. 大歌单同步长达数分钟，旧版单请求内无法向前端回报进度，用户只能干等；
+ * 2. 每步都是独立短请求（最坏 ~20s，稳在网关 30s 默认上限内），彻底规避 504；
+ * 3. 每 chunk 幂等提交宿主（upsert + INSERT OR IGNORE），会话即使因运行时重启丢失
+ *   （返回 SYNC_SESSION_NOT_FOUND），重试也只补缺歌，已导入进度不丢。
+ * 任一环节失败都以 partial/failed 收尾而非抛异常中断（错误信息进 result.message），
  * 便于前端串行多张时单张失败不阻断后续。
  */
-export async function syncOne(pl: RemotePlaylistRef): Promise<SyncOneResult> {
-  const base: SyncOneResult = {
-    status: 'failed',
-    source: pl.source,
-    remoteId: pl.id,
-    remoteTotal: 0,
-    added: 0,
-    dead: 0,
-    pending: 0,
+
+/** import 阶段每步处理的歌曲数：并发 8、单首探测最长 8s、一批约两轮 ≈16s，
+ *  加宿主写库往返后单步稳在网关默认 30s 内（前端另带 60s 放宽头兜底） */
+export const SYNC_STEP_CHUNK = 16
+
+/** 会话空闲回收时间：超时未推进的会话在下次 begin 时清理 */
+const SESSION_TTL_MS = 30 * 60 * 1000
+
+interface SyncSession {
+  id: string
+  pl: RemotePlaylistRef
+  config: GoMusicDlConfig
+  phase: 'fetch' | 'prepare' | 'import' | 'done'
+  /** fetch 阶段：下一个要抓的页码（从 1 开始） */
+  page: number
+  /** 首页解析到的总页数；摘要缺失（inferred=false）时为 null（总页数未知） */
+  totalPages: number | null
+  remote: GoSong[]
+  fetchDone: boolean
+  /** 翻页中断（page>1 网络错误）：以已抓到的为准 */
+  fetchTruncated: boolean
+  localId?: number
+  /** prepare 后：待导入的新增歌曲队列 */
+  newSongs: GoSong[]
+  /** import 阶段：已处理到 newSongs 的下标（不含失败作废的 chunk） */
+  cursor: number
+  added: number
+  dead: number
+  startedAt: number
+  updatedAt: number
+  result?: SyncOneResult
+}
+
+/** step 接口响应：done=false 时携带实时进度，done=true 时携带最终结果 */
+export interface SyncStepResponse {
+  done: boolean
+  sessionId: string
+  phase?: 'fetch' | 'prepare' | 'import'
+  /** fetch：已抓页数 / 首页解析到的总页数（可能为 null=未知） */
+  pagesDone?: number
+  totalPages?: number | null
+  /** fetch：已读取的歌曲数 */
+  songsFetched?: number
+  /** import：已处理歌数 / 待导入总数 */
+  processed?: number
+  total?: number
+  /** 累计：实际加进歌单的歌数 / 确认失效丢弃的歌数 */
+  added?: number
+  dead?: number
+  result?: SyncOneResult
+}
+
+/** 会话不存在（运行时重启/超时回收）：幂等设计下前端提示重试即可续传 */
+export class SyncSessionNotFound extends Error {}
+
+const sessions = new Map<string, SyncSession>()
+
+function pruneSessions(): void {
+  const now = Date.now()
+  for (const [k, s] of sessions) {
+    if (now - s.updatedAt > SESSION_TTL_MS) sessions.delete(k)
   }
+}
+
+/** 阶段进度视图（begin/step 共用的未完成响应） */
+function stepView(s: SyncSession): SyncStepResponse {
+  return {
+    done: false,
+    sessionId: s.id,
+    phase: s.phase === 'done' ? 'import' : s.phase,
+    pagesDone: Math.max(1, s.page - (s.fetchDone ? 0 : 1)),
+    totalPages: s.totalPages,
+    songsFetched: s.remote.length,
+    processed: s.cursor,
+    total: s.phase === 'import' ? s.newSongs.length : undefined,
+    added: s.added,
+    dead: s.dead,
+  }
+}
+/** 收尾：写绑定（已解析出本地歌单时）+ 返回最终结果；会话保留供幂等重放 */
+async function finishSession(
+  s: SyncSession,
+  status: SyncOneResult['status'],
+  message?: string,
+): Promise<SyncStepResponse> {
+  const finalMessage =
+    message ||
+    (s.fetchTruncated
+      ? '远端部分分页读取失败，本次以已读取部分为准，下次同步自动补齐'
+      : status === 'partial'
+        ? '部分歌曲未处理完，请再点一次同步继续'
+        : undefined)
+  const result: SyncOneResult = {
+    status,
+    source: s.pl.source,
+    remoteId: s.pl.id,
+    localPlaylistId: s.localId,
+    remoteTotal: s.remote.length,
+    added: s.added,
+    dead: s.dead,
+    pending:
+      status === 'partial' ? Math.max(0, s.newSongs.length - s.cursor) : 0,
+    message: finalMessage,
+  }
+  if (s.localId) {
+    await upsertBinding({
+      source: s.pl.source,
+      remoteId: s.pl.id,
+      remoteName: s.pl.name || '',
+      remoteCover: s.pl.cover || '',
+      localPlaylistId: s.localId,
+      lastSyncAt: Date.now(),
+      lastAdded: result.added,
+      lastStatus: status,
+      lastError: status === 'failed' ? finalMessage : undefined,
+    })
+  }
+  s.phase = 'done'
+  s.result = result
+  s.updatedAt = Date.now()
+  return { done: true, sessionId: s.id, result }
+}
+
+/** begin：创建会话并抓取首页（登录失效/网络错误在此快速失败，直接抛给调用方） */
+export async function beginSyncSession(
+  pl: RemotePlaylistRef,
+): Promise<SyncStepResponse> {
+  pruneSessions()
   const config = await getConfig()
   if (!config.baseUrl) {
-    return { ...base, message: '服务地址未配置，请先在插件设置中填写' }
+    throw new Error('服务地址未配置，请先在插件设置中填写')
   }
-  // 1) 远端全量（含登录失效检测）
-  let remote: GoSong[]
-  const fetchDeadline = { hit: false }
-  const fetchTimer = setTimeout(() => { fetchDeadline.hit = true }, BATCH_DEADLINE_MS)
+  const session: SyncSession = {
+    id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+    pl,
+    config,
+    phase: 'fetch',
+    page: 1,
+    totalPages: null,
+    remote: [],
+    fetchDone: false,
+    fetchTruncated: false,
+    newSongs: [],
+    cursor: 0,
+    added: 0,
+    dead: 0,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  await fetchNextPage(session)
+  sessions.set(session.id, session)
+  return stepView(session)
+}
+
+/** step：推进一个最小工作单元，返回实时进度或最终结果 */
+export async function stepSyncSession(
+  sessionId: string,
+): Promise<SyncStepResponse> {
+  const s = sessions.get(String(sessionId || ''))
+  if (!s) {
+    throw new SyncSessionNotFound(
+      '同步会话已失效，请重新开始同步（已导入部分不会丢失）',
+    )
+  }
+  s.updatedAt = Date.now()
+  if (s.phase === 'done') {
+    return { done: true, sessionId: s.id, result: s.result }
+  }
   try {
-    remote = await fetchRemoteSongs(config, pl, fetchDeadline)
-    clearTimeout(fetchTimer)
-  } catch (e) {
-    clearTimeout(fetchTimer)
-    return { ...base, message: String((e as Error)?.message || e) }
-  }
-  if (!remote.length) {
-    return {
-      ...base,
-      status: 'ok',
-      message: '远端歌单为空（或该源未返回任何歌曲）',
+    // 1) fetch 阶段：每步抓一页
+    if (s.phase === 'fetch') {
+      const more = await fetchNextPage(s)
+      if (more) return stepView(s)
+      s.phase = 'prepare'
     }
-  }
-  // 2) 解析/创建本地歌单 + diff
-  let localId: number
-  try {
-    const binding = await getBinding(pl.source, pl.id)
-    localId = await resolveLocalPlaylist(config, pl, binding)
-  } catch (e) {
-    return { ...base, message: String((e as Error)?.message || e) }
-  }
-  let newSongs: GoSong[]
-  try {
-    const localKeys = await fetchLocalDedupKeys(localId)
-    newSongs = diffRemoteAgainstLocal(remote, localKeys)
-  } catch (e) {
-    return {
-      ...base,
-      localPlaylistId: localId,
-      remoteTotal: remote.length,
-      message: String((e as Error)?.message || e),
+    // 2) prepare 阶段：解析/创建本地歌单 + diff（一步完成，宿主调用秒级）
+    if (s.phase === 'prepare') {
+      if (!s.remote.length) {
+        return await finishSession(
+          s,
+          'ok',
+          '远端歌单为空（或该源未返回任何歌曲）',
+        )
+      }
+      const binding = await getBinding(s.pl.source, s.pl.id)
+      s.localId = await resolveLocalPlaylist(s.config, s.pl, binding)
+      const localKeys = await fetchLocalDedupKeys(s.localId)
+      s.newSongs = diffRemoteAgainstLocal(s.remote, localKeys)
+      if (!s.newSongs.length) {
+        // 全部已同步（或远端回退了）：幂等刷新一次绑定时间戳
+        return await finishSession(s, 'ok')
+      }
+      s.phase = 'import'
+      return stepView(s)
     }
-  }
-  const finish = async (
-    status: SyncOneResult['status'],
-    added: number,
-    dead: number,
-    pending: number,
-    message?: string,
-  ): Promise<SyncOneResult> => {
-    await upsertBinding({
-      source: pl.source,
-      remoteId: pl.id,
-      remoteName: pl.name || '',
-      remoteCover: pl.cover || '',
-      localPlaylistId: localId,
-      lastSyncAt: Date.now(),
-      lastAdded: added,
-      lastStatus: status,
-      lastError: status === 'failed' ? message : undefined,
-    })
-    return {
-      status,
-      source: pl.source,
-      remoteId: pl.id,
-      localPlaylistId: localId,
-      remoteTotal: remote.length,
-      added,
-      dead,
-      pending,
-      message,
-    }
-  }
-  if (!newSongs.length) {
-    // 全部已同步（或远端回退了）：幂等刷新一次绑定时间戳
-    return finish('ok', 0, 0, 0)
-  }
-  // 3) 探测 + 批量入库（复用 /import/batch 的 deadline 与并发策略）
-  const deadline = { hit: false }
-  const timer = setTimeout(() => {
-    deadline.hit = true
-  }, BATCH_DEADLINE_MS)
-  let imported: any[] = []
-  let dead = 0
-  let pending = 0
-  try {
-    const results = await mapWithConcurrency(newSongs, 8, (it) =>
-      resolveImportableItem(it, config, deadline),
+    // 3) import 阶段：每步处理 SYNC_STEP_CHUNK 首（探测 → 批量入库 → 幂等加歌单）。
+    //    并发 8、单首探测最长 8s、一批约两轮 ≈16s，加宿主写库往返后，
+    //    单步总耗时稳在网关默认 30s 内（前端另带 60s 放宽头兜底）。
+    const chunk = s.newSongs.slice(s.cursor, s.cursor + SYNC_STEP_CHUNK)
+    const results = await mapWithConcurrency(chunk, 8, (it) =>
+      resolveImportableItem(it, s.config),
     )
     const okItems: SongItem[] = []
     for (const r of results) {
       if (r.item) okItems.push(r.item)
-      else if (r.reason === 'dead') dead++
-      else pending++ // deadline 截断的未处理歌（reason === 'timeout'）
+      else if (r.reason === 'dead') s.dead++
     }
     if (okItems.length) {
-      imported = await importRemoteSongs(okItems)
+      const imported = await importRemoteSongs(okItems)
+      const ids = imported
+        .map((x: any) => x.id)
+        .filter((id: unknown) => typeof id === 'number')
+      if (ids.length) {
+        // 幂等加歌单（INSERT OR IGNORE，已存在自动 skipped）
+        const addRes = await callHostApi(
+          'POST',
+          `/api/v1/playlists/${s.localId}/songs`,
+          { song_ids: ids },
+        )
+        s.added += Number(addRes && addRes.added) || 0
+      }
     }
-  } catch (e) {
-    clearTimeout(timer)
-    // 入库整体失败（如宿主不可达）：下次重试 diff 会重新补齐
-    return finish(
-      'partial',
-      0,
-      dead,
-      newSongs.length - dead,
-      String((e as Error)?.message || e),
-    )
-  }
-  clearTimeout(timer)
-  // 4) 幂等加歌单（INSERT OR IGNORE，已存在自动 skipped）
-  let added = 0
-  try {
-    const ids = imported
-      .map((s) => s.id)
-      .filter((id) => typeof id === 'number')
-    if (ids.length) {
-      const addRes = await callHostApi(
-        'POST',
-        `/api/v1/playlists/${localId}/songs`,
-        { song_ids: ids },
-      )
-      added = Number(addRes && addRes.added) || 0
+    s.cursor += chunk.length
+    if (s.cursor >= s.newSongs.length) {
+      return await finishSession(s, 'ok')
     }
+    return stepView(s)
   } catch (e) {
-    // 歌已在曲库但未进歌单：下次同步 diff（按 dedup_key）仍视为新增，重试即续传
-    return finish(
-      'partial',
-      0,
-      dead,
-      pending + imported.length,
-      String((e as Error)?.message || e),
-    )
+    const message = String((e as Error)?.message || e)
+    // 入库/加歌单失败（如宿主不可达）：本 chunk 作废（cursor 未推进），
+    // 下次重试 diff 会重新补齐；已解析出本地歌单则落 partial 绑定，否则 failed。
+    return await finishSession(s, s.localId ? 'partial' : 'failed', message)
   }
-  const status: SyncOneResult['status'] = pending > 0 ? 'partial' : 'ok'
-  const message =
-    pending > 0
-      ? `因超时截断，还有 ${pending} 首未处理，请再点一次同步继续`
-      : undefined
-  return finish(status, added, dead, pending, message)
 }

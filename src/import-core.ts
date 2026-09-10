@@ -107,8 +107,10 @@ export async function mapWithConcurrency<T, R>(
   return ret
 }
 
-// 批量导入整体时限：网关通常 60s 超时，留余量；超时则把已探明可播的歌
-// 先写库、未完成（多为换源/失效歌）计入 failed，避免整批被网关 504 掐断。
+// 批量导入整体时限：宿主网关默认 30s 会把插件调用掐成 504，但 /import/batch
+// 的前端请求会带 X-Plugin-Timeout-Ms: 180000 显式放宽（上限 300s），故 50s
+// 预算仍留足余量；超时则把已探明可播的歌先写库、未完成（多为换源/失效歌）
+// 计入 failed，避免整批被网关 504 掐断。
 export const BATCH_DEADLINE_MS = 50000
 
 // 对单首做「下载可达性探测」判定：可导入返回 item，否则返回失效原因。

@@ -1,8 +1,9 @@
 // syncPanel.js — 歌单同步面板：手动同步 go-music-dl 已登录账号的歌单到 Songloft
 // 交互：打开面板 → 列出账号歌单（复用 parsePlaylists 解析 /user_playlists HTML）
-//       → 勾选（全选 / 仅未同步快捷键）→ 串行逐张调用后端 POST /sync/run。
+//       → 勾选（全选 / 仅未同步快捷键）→ 串行逐张「begin + 循环 step」驱动后端。
 // 同步引擎与绑定存储在后端 src/sync.ts（增量 diff + 幂等入库，重试即续传），
-// 本模块只负责「选歌单 + 触发 + 进度展示」，不持有同步状态。
+// 后端每步只推进一小批工作并返回实时进度，本模块逐步刷新行内进度条
+// （读页 p/P → 比对 → 导入 m/total），不持有同步状态。
 import { store, sourceLabel, FALLBACK_COVER, PLUGIN_ICON, ALL_SOURCES } from './state.js'
 import { escapeHtml, showSnackbar } from './util.js'
 import {
@@ -282,6 +283,84 @@ export function selectUnsyncedSync() {
 }
 
 // ---------- 同步执行：串行逐张（单张失败不阻断后续） ----------
+// 每张歌单走「begin + 循环 step」分步协议：后端每步只做一小批工作（抓一页 /
+// 比对 / 导入 16 首）即返回实时进度，本模块据此刷新行内进度条与文案，
+// 大歌单同步全程可感知（读页 p/P → 比对 → 导入 m/total），不再是黑盒等待。
+
+// 行内进度百分比：读页 5→20%，比对 22%，导入 25→100%；
+// totalPages 未知（go-music-dl 无分页摘要）时读页阶段返回 0 → 进度条转不确定动画
+function syncPercent(step) {
+  if (step.phase === 'fetch') {
+    const P = step.totalPages
+    if (!P) return 0
+    const done = Math.min(step.pagesDone || 1, P)
+    return 5 + Math.round((15 * done) / P)
+  }
+  if (step.phase === 'prepare') return 22
+  if (step.phase === 'import') {
+    const total = step.total || 0
+    if (!total) return 25
+    const done = Math.min(step.processed || 0, total)
+    return 25 + Math.round((75 * done) / total)
+  }
+  return 100
+}
+
+// 进度一行文案（随阶段切换）
+function progressLine(step) {
+  if (step.phase === 'fetch') {
+    const base = `正在读取远端歌单 · 已读 ${step.songsFetched || 0} 首`
+    return step.totalPages
+      ? `${base}（第 ${step.pagesDone || 1}/${step.totalPages} 页）`
+      : base
+  }
+  if (step.phase === 'prepare') return '正在比对本地曲库，计算新增…'
+  if (step.phase === 'import') {
+    let line = `正在校验并导入 ${step.processed || 0}/${step.total || 0}`
+    if (step.added) line += ` · 新增 ${step.added}`
+    if (step.dead) line += ` · 失效 ${step.dead}`
+    return line
+  }
+  return '处理中…'
+}
+
+// 行内进度条（首次调用时插入 .sync-meta，之后只更新宽度与文案）
+function setItemProgress(it, step) {
+  const row = document.querySelector(
+    `.sync-item[data-idx="${panelItems.indexOf(it)}"]`,
+  )
+  if (!row) return
+  let bar = row.querySelector('[data-role="progress"]')
+  if (!bar) {
+    bar = document.createElement('div')
+    bar.className = 'sync-progress'
+    bar.dataset.role = 'progress'
+    bar.innerHTML = '<div class="sync-progress-fill"></div>'
+    const meta = row.querySelector('.sync-meta')
+    if (meta) meta.appendChild(bar)
+  }
+  const pct = syncPercent(step)
+  const fill = bar.querySelector('.sync-progress-fill')
+  if (fill) {
+    if (pct > 0) {
+      bar.classList.remove('indeterminate')
+      fill.style.width = pct + '%'
+    } else {
+      // 总页数未知等无法定量的阶段：不确定态动画
+      bar.classList.add('indeterminate')
+      fill.style.width = '30%'
+    }
+  }
+  setItemStatus(it, escapeHtml(progressLine(step)), true)
+}
+
+function clearItemProgress(it) {
+  const row = document.querySelector(
+    `.sync-item[data-idx="${panelItems.indexOf(it)}"]`,
+  )
+  const bar = row && row.querySelector('[data-role="progress"]')
+  if (bar) bar.remove()
+}
 
 export async function runSync() {
   if (syncing) return
@@ -296,58 +375,68 @@ export async function runSync() {
   let partialCount = 0
   let partialAdded = 0
   for (const it of selected) {
-    setItemStatus(it, '同步中…', true)
+    setItemStatus(it, '<span class="sync-state none">连接中…</span>', true)
+    setItemProgress(it, { phase: 'fetch' })
     try {
-      const res = await API.syncRun({
+      const begin = await API.syncBegin({
         source: it.source,
         id: it.id,
         name: it.name,
         cover: it.cover,
       })
-      const r = (res && res.result) || {}
-      const status = r.status || 'failed'
+      let result = null
+      // 循环推进：每步返回实时进度（抓页/比对/导入），done=true 时携带最终结果
+      while (true) {
+        const step = await API.syncStep(begin.sessionId)
+        if (step.done) {
+          result = step.result || {}
+          break
+        }
+        setItemProgress(it, step)
+      }
+      const status = result.status || 'failed'
       if (status === 'ok' || status === 'partial') {
         if (status === 'ok') {
           okCount++
-          totalAdded += Number(r.added) || 0
+          totalAdded += Number(result.added) || 0
         } else {
           partialCount++
-          partialAdded += Number(r.added) || 0
+          partialAdded += Number(result.added) || 0
         }
         it.binding = {
           source: it.source,
           remoteId: it.id,
           remoteName: it.name,
           remoteCover: it.cover,
-          localPlaylistId: r.localPlaylistId,
+          localPlaylistId: result.localPlaylistId,
           lastSyncAt: Date.now(),
-          lastAdded: Number(r.added) || 0,
+          lastAdded: Number(result.added) || 0,
           lastStatus: status,
         }
         if (status === 'ok') {
           setItemStatus(
             it,
-            `<span class="sync-state ok">完成</span> · 新增 ${Number(r.added) || 0} 首` +
-              (Number(r.dead) ? ` · 失效跳过 ${r.dead}` : ''),
+            `<span class="sync-state ok">完成</span> · 新增 ${Number(result.added) || 0} 首` +
+              (Number(result.dead) ? ` · 失效跳过 ${result.dead}` : ''),
           )
         } else {
           setItemStatus(
             it,
             `<span class="sync-state partial">部分完成</span> · 新增 ${
-              Number(r.added) || 0
-            } 首 · ${escapeHtml(r.message || '请再点一次同步继续')}`,
+              Number(result.added) || 0
+            } 首 · ${escapeHtml(result.message || '请再点一次同步继续')}`,
           )
         }
       } else {
         failCount++
         it.binding = Object.assign({}, it.binding, {
           lastStatus: 'failed',
-          lastError: r.message || '',
+          lastError: result.message || '',
         })
         setItemStatus(
           it,
           `<span class="sync-state fail">失败</span> · ${escapeHtml(
-            r.message || '未知原因',
+            result.message || '未知原因',
           )}`,
         )
       }
@@ -360,6 +449,7 @@ export async function runSync() {
         )}`,
       )
     }
+    clearItemProgress(it)
   }
   syncing = false
   // 重绘恢复 checkbox 可用态并展示最终绑定状态

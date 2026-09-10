@@ -6,7 +6,13 @@ import {
   dedupKeyOf,
   diffRemoteAgainstLocal,
   mergeBinding,
+  SYNC_STEP_CHUNK,
 } from './.gen/sync.mjs'
+
+test('SYNC_STEP_CHUNK：每步导入批量保持在网关安全范围内', () => {
+  // 并发 8、单首探测最长 8s：chunk 越界会导致单步请求可能超过网关 30s 默认上限
+  assert.ok(SYNC_STEP_CHUNK > 0 && SYNC_STEP_CHUNK <= 32)
+})
 
 test('bindingKeyOf / dedupKeyOf 键格式（dedup_key 与 import-core toRemoteSongRequest 同格式）', () => {
   assert.equal(bindingKeyOf('netease', '8751963'), 'netease__pl__8751963')
