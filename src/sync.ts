@@ -56,10 +56,15 @@ export interface SyncBinding {
 
 const SYNC_KEY = 'gomusicdl_sync_bindings'
 
-// 登录/初始化页特征（与前端 diagnoseUserPlaylists 同一套特征词）：
-// go-music-dl cookie 失效时，详情接口会返回登录页 HTML 而非歌曲卡片
+// 登录/初始化页特征（兜底）：仅当 go-music-dl 开了登录鉴权且返回了登录/初始化
+// HTML 时才会命中。注意上游的 authRequired 只挂在 configAPI 组（/cookies、
+// POST /settings、/qr_login 等），/music/playlist 详情端点本身不鉴权——
+// cookie 失效时它返回的是 200 +「获取歌单失败: …」错误横幅 + 零歌曲卡片，
+// 由 playlistPageErrorOf 识别，这才是同步链路的真实失效形态。
+// （旧版特征词「请输入用户名」只出现在 setup POST 的错误响应里，GET 页面
+// 不含该词，且歌名可能撞词造成误判，已移除。）
 const AUTH_PAGE_RE =
-  /登录 music-dl|初始化管理员账号|请输入用户名|setupRequired/
+  /登录 music-dl|初始化管理员账号|setupRequired/
 
 // 跨分页抓取上限（对齐前端 loadAllCollectionSongs 的防死循环 guard）
 const MAX_PAGES = 100
@@ -100,6 +105,30 @@ export function mergeBinding(
   binding: SyncBinding,
 ): Record<string, SyncBinding> {
   return { ...map, [bindingKeyOf(binding.source, binding.remoteId)]: binding }
+}
+
+/**
+ * 从歌单/专辑详情页 HTML 提取上游错误信息（纯函数，可单测）。
+ * go-music-dl 的 /music/playlist 不走登录鉴权：cookie 失效/音源接口失败时，
+ * 页面是 200 + `<div class="error-msg">获取歌单失败: …</div>`（search_box.html）
+ * 且零歌曲卡片——旧逻辑会把这种页面误判成「远端歌单为空」，提示完全误导。
+ * 这里把错误文本提取出来交上层抛出，区分「真·空歌单」与「上游读取失败」。
+ * 返回 null 表示页面没有可识别的上游错误。
+ */
+export function playlistPageErrorOf(html: string): string | null {
+  if (!html) return null
+  const m = html.match(/(?:获取歌单失败|获取专辑失败)\s*[:：]\s*([^<]{1,300})/)
+  if (m) {
+    const detail = m[1].trim()
+    const hint = /cookie|登录|login|授权/i.test(detail)
+      ? '（go-music-dl 侧该音源登录态可能已失效，请到 go-music-dl 网页端重新扫码登录后再同步）'
+      : ''
+    return `远端歌单读取失败：${detail}${hint}`
+  }
+  if (/该源不支持查看歌单详情|该源不支持查看专辑详情/.test(html)) {
+    return '远端歌单读取失败：该音源不支持查看歌单/专辑详情'
+  }
+  return null
 }
 
 // ---------- 绑定存储（songloft.storage，驱逐/重启不丢） ----------
@@ -170,10 +199,16 @@ async function fetchNextPage(s: SyncSession): Promise<boolean> {
     return false
   }
   const songs = parseSongCards(html)
-  if (s.page === 1 && songs.length === 0 && AUTH_PAGE_RE.test(html)) {
-    throw new Error(
-      'go-music-dl 登录已失效（接口返回登录页），请到 go-music-dl 网页端重新扫码登录后再同步',
-    )
+  if (s.page === 1 && songs.length === 0) {
+    // 首页零卡片：先区分「上游读取失败」（cookie 失效/音源接口报错，页面带
+    // 错误横幅）与「真·空歌单」，避免把失效误报成空歌单
+    const pageError = playlistPageErrorOf(html)
+    if (pageError) throw new Error(pageError)
+    if (AUTH_PAGE_RE.test(html)) {
+      throw new Error(
+        'go-music-dl 返回登录/初始化页，请先完成 go-music-dl 的登录初始化后再同步',
+      )
+    }
   }
   if (!songs.length) {
     s.fetchDone = true

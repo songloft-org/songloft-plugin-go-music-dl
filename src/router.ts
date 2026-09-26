@@ -5,7 +5,7 @@ import {
   parseQuery,
 } from '@songloft/plugin-sdk'
 import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
-import { getConfig, saveConfig, GoMusicDlConfig } from './config'
+import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources } from './config'
 import {
   searchSongs,
   searchSongsPage,
@@ -101,11 +101,20 @@ router.post('/config', async (req: HTTPRequest) => {
   return jsonResponse({ success: true, config: newConfig })
 })
 
-// 全局搜索（Songloft 主程序调用）
+// 全局搜索（Songloft 主程序调用）。
+// 宿主只在本插件作为 L2 兜底源时才调用该端点，单插件预算仅 5s
+// （internal/services/source/resolver.go DefaultResolverOpts），故源集收窄为
+// 快源子集、fetch 超时 4s，确保能在预算内返回。
 router.post('/api/search', createSearchHandler({
   search: async (keyword: string, page = 1, pageSize = 20) => {
     const config = await getConfig()
-    const songs = await searchSongs(keyword, config, page, pageSize)
+    const songs = await searchSongs(
+      keyword,
+      { ...config, sources: hotPathSources(config) },
+      page,
+      pageSize,
+      4000,
+    )
     return songs.map(toSearchItem)
   },
 }))
@@ -367,8 +376,17 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
   }
   try {
     const config = await getConfig()
+    // miot 侧 external_search_timeout 默认仅 6s：源集收窄为快源子集（对齐上游
+    // GetDefaultSourceNames 的 8 源，尊重用户关停）、fetch 超时 4.5s，
+    // 留出重排序与响应余量，避免被 miot 判超时而直接弃用本源。
     // 抓取前 20 条搜索结果，经 sortSongsByRelevance 打分重排序后取第一条最佳匹配
-    const songs = await searchSongs(keyword, config, 1, 20)
+    const songs = await searchSongs(
+      keyword,
+      { ...config, sources: hotPathSources(config) },
+      1,
+      20,
+      4500,
+    )
     if (!songs.length) {
       return jsonResponse({ code: 1, msg: 'no result', data: null })
     }
@@ -416,19 +434,22 @@ router.get('/lyric-search', async (req: HTTPRequest) => {
   const title = q.title || ''
   const artist = q.artist || ''
   try {
+    // 宿主歌词提供者预算 15s/提供者（manager.go SearchLyrics）：搜索 8s + 取词 5s，
+    // 源集收窄为快源子集，确保整套「回搜→取词」能在预算内完成。
     // 宿主仅提供元数据，无 source_data，需按标题+歌手回搜再取歌词
     const songs = await searchSongs(
       `${title} ${artist}`.trim(),
-      config,
+      { ...config, sources: hotPathSources(config) },
       1,
       5,
+      8000,
     )
     const hit =
       songs.find(
         (s) => s.name.includes(title) || title.includes(s.name),
       ) || songs[0]
     if (!hit) return jsonResponse({ lyric: '' })
-    const lyric = await fetchLyric(hit, config)
+    const lyric = await fetchLyric(hit, config, 5000)
     return jsonResponse({ lyric: lyric || '' })
   } catch (e) {
     return jsonResponse({ lyric: '' })
@@ -460,7 +481,8 @@ router.get('/api/lyric', async (req: HTTPRequest) => {
     extra,
   }
   try {
-    const lyric = await fetchLyric(song, config)
+    // 前端经网关调用（默认 30s），给 20s 上游预算留响应余量
+    const lyric = await fetchLyric(song, config, 20000)
     return jsonResponse({ lyric: lyric || '' })
   } catch {
     return jsonResponse({ lyric: '' })

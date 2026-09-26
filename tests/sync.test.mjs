@@ -6,6 +6,7 @@ import {
   dedupKeyOf,
   diffRemoteAgainstLocal,
   mergeBinding,
+  playlistPageErrorOf,
   SYNC_STEP_CHUNK,
 } from './.gen/sync.mjs'
 
@@ -102,4 +103,51 @@ test('mergeBinding：新增与覆盖，不影响其他绑定', () => {
   assert.equal(added['qq__pl__2'].localPlaylistId, 22)
   // mergeBinding 为纯函数：不修改原对象
   assert.equal(existing['netease__pl__1'].lastSyncAt, 100)
+})
+
+test('playlistPageErrorOf：识别「获取歌单失败」错误横幅（cookie 失效形态）', () => {
+  // go-music-dl /music/playlist 不鉴权，cookie 失效时是 200 + 错误横幅 + 零卡片
+  const html =
+    '<div class="error-msg"><i class="fa-solid fa-circle-exclamation"></i> 获取歌单失败: netease user playlists require cookie</div>'
+  const err = playlistPageErrorOf(html)
+  assert.ok(err)
+  assert.match(err, /netease user playlists require cookie/)
+  // 含 cookie/登录 关键词时附加重扫码提示
+  assert.match(err, /重新扫码登录/)
+})
+
+test('playlistPageErrorOf：非登录类上游错误不带重登录提示', () => {
+  const html = '<div class="error-msg"> 获取歌单失败: context deadline exceeded</div>'
+  const err = playlistPageErrorOf(html)
+  assert.ok(err)
+  assert.match(err, /context deadline exceeded/)
+  assert.ok(!err.includes('重新扫码登录'))
+})
+
+test('playlistPageErrorOf：识别「获取专辑失败」与「该源不支持」', () => {
+  assert.match(
+    playlistPageErrorOf('<div class="error-msg"> 获取专辑失败: upstream 502</div>'),
+    /获取专辑失败|读取失败/,
+  )
+  assert.match(
+    playlistPageErrorOf('<div>该源不支持查看歌单详情</div>'),
+    /不支持/,
+  )
+})
+
+test('playlistPageErrorOf：正常页面 / 真空歌单返回 null', () => {
+  const okPage =
+    '<li class="song-card" data-id="1" data-source="netease" data-name="A" data-artist="x" data-album="" data-cover="" data-duration="0"></li>'
+  assert.equal(playlistPageErrorOf(okPage), null)
+  assert.equal(playlistPageErrorOf('<div class="empty-state">暂无歌曲</div>'), null)
+  assert.equal(playlistPageErrorOf(''), null)
+})
+
+test('playlistPageErrorOf：错误文本被 HTML 转义时仍可提取（截断到标签前）', () => {
+  const html =
+    '<div class="error-msg"> 获取歌单失败: netease 登录已失效 &amp; 需重新扫码</div>'
+  const err = playlistPageErrorOf(html)
+  assert.ok(err)
+  // 实体可能原样截留，但中文关键信息必须还在
+  assert.match(err, /登录已失效/)
 })

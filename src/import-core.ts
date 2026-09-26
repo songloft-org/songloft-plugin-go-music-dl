@@ -66,6 +66,9 @@ export async function probeDownloadable(
     config.baseUrl,
   )
   if (!url) return 'dead' // baseUrl 为空：与旧口径一致按不可用处理（/import/batch 另有显式 400）
+  // 超时兜底：X-Fetch-Timeout-Ms=6000（inspect 上游自带 5s client 超时，6s 是余量）
+  // + QuickJS 侧 8s Promise.race 双保险。宿主 fetch 默认 30s，不设头时批量探测
+  // 最坏要把整批预算耗在卡死的 inspect 上。
   const timeout = new Promise<'unknown'>((resolve) =>
     setTimeout(() => resolve('unknown'), 8000),
   )
@@ -73,7 +76,10 @@ export async function probeDownloadable(
     const res: any = await Promise.race([
       fetch(url, {
         method: 'GET',
-        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        headers: {
+          'X-Requested-With': 'XMLHttpRequest',
+          'X-Fetch-Timeout-Ms': '6000',
+        },
       }),
       timeout,
     ])

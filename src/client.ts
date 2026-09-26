@@ -68,12 +68,21 @@ export function parseSongCards(html: string): GoSong[] {
 /**
  * 发起请求并返回文本。集中处理网络错误与 HTTP 错误，给出可读的报错，
  * 这样上层（router）包成 500 时，前端能拿到真实原因而不是笼统的 "HTTP 500"。
+ *
+ * timeoutMs 经宿主内部头 X-Fetch-Timeout-Ms 下发（宿主 clamp 到 [100ms, 30s]，
+ * 头本身不会转发给 go-music-dl）。上游 go-music-dl 的多源搜索对单源无超时
+ * （music-lib 共享 client 默认 2 分钟），不设头时插件 fetch 会干等 30s 默认值；
+ * 默认 25s 留出响应处理余量（网关默认 30s），严格预算链路（topone 6s /
+ * 宿主 fallback 5s / 歌词 15s）由调用方传更小的值。
  */
-async function fetchText(url: string): Promise<string> {
+async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
   let res: any
   try {
     res = await fetch(url, {
-      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Fetch-Timeout-Ms': String(Math.min(30000, Math.max(100, timeoutMs))),
+      },
     })
   } catch (e: any) {
     throw new Error('无法连接 go-music-dl: ' + (e?.message || String(e)))
@@ -107,6 +116,7 @@ async function fetchSearchHtml(
   type: SearchType,
   page: number,
   pageSize: number,
+  timeoutMs = 25000,
 ): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl)
   const sources =
@@ -117,8 +127,10 @@ async function fetchSearchHtml(
     `page=${page}`,
   ]
   // go-music-dl 认的是 page_size（不是 count）。仅当显式给定正数时才传，
-  // 传 0 则不带该参数，让服务端使用其 WebPageSize 设置（默认 30），
-  // 使插件搜索页每页条数与 go-music-dl 网页端保持一致。
+  // 传 0 则不带该参数，让服务端使用其 WebPageSize 设置（默认 200，见上游
+  // core.DefaultWebPageSize；实例可在设置页改小），使插件搜索页每页条数与
+  // go-music-dl 网页端保持一致。注意：上游分页是「全量搜索后内存切片」，
+  // 翻页会触发全量重搜，page_size 越大翻页次数越少。
   if (pageSize > 0) {
     params.push(`page_size=${pageSize}`)
   }
@@ -126,7 +138,7 @@ async function fetchSearchHtml(
     params.push(`sources=${encodeURIComponent(s)}`)
   }
   const url = `${base}/search?${params.join('&')}`
-  return fetchText(url)
+  return fetchText(url, timeoutMs)
 }
 
 // 常见衍生版本修饰词
@@ -215,8 +227,9 @@ export async function searchSongs(
   config: GoMusicDlConfig,
   page = 1,
   pageSize = 20,
+  timeoutMs = 25000,
 ): Promise<GoSong[]> {
-  const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize)
+  const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize, timeoutMs)
   const items = parseSongCards(html)
   return sortSongsByRelevance(items, keyword)
 }
@@ -264,8 +277,9 @@ export async function searchSongsPage(
   keyword: string,
   config: GoMusicDlConfig,
   page = 1,
+  timeoutMs = 25000,
 ): Promise<{ items: GoSong[]; pagination: Pagination }> {
-  const html = await fetchSearchHtml(keyword, config, 'song', page, 0)
+  const html = await fetchSearchHtml(keyword, config, 'song', page, 0, timeoutMs)
   const items = parseSongCards(html)
   const sortedItems = sortSongsByRelevance(items, keyword)
   const pagination = parsePagination(html)
@@ -322,8 +336,9 @@ export async function searchCollections(
   type: 'playlist' | 'album',
   page = 1,
   pageSize = 50,
+  timeoutMs = 25000,
 ): Promise<GoCollection[]> {
-  const html = await fetchSearchHtml(keyword, config, type, page, pageSize)
+  const html = await fetchSearchHtml(keyword, config, type, page, pageSize, timeoutMs)
   return parsePlaylistCards(html)
 }
 
@@ -336,8 +351,9 @@ export async function searchCollectionsPage(
   config: GoMusicDlConfig,
   type: 'playlist' | 'album',
   page = 1,
+  timeoutMs = 25000,
 ): Promise<{ items: GoCollection[]; pagination: Pagination }> {
-  const html = await fetchSearchHtml(keyword, config, type, page, 0)
+  const html = await fetchSearchHtml(keyword, config, type, page, 0, timeoutMs)
   const items = parsePlaylistCards(html)
   const pagination = parsePagination(html)
   if (pagination.total === 0 && items.length > 0) {
@@ -401,6 +417,7 @@ export function buildInspectUrl(song: GoSong, baseUrl: string): string {
 export async function fetchLyric(
   song: GoSong,
   config: GoMusicDlConfig,
+  timeoutMs = 25000,
 ): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl)
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
@@ -418,7 +435,7 @@ export async function fetchLyric(
     // 导致同一句歌词重复出现。format=line 由 go-music-dl 折叠为多时间戳→单行。
     `&format=line`
   try {
-    return await fetchText(url)
+    return await fetchText(url, timeoutMs)
   } catch {
     return ''
   }
@@ -434,6 +451,7 @@ export async function fetchLyric(
 export async function fetchUserPlaylistsHtml(
   config: GoMusicDlConfig,
   sources?: string[],
+  timeoutMs = 25000,
 ): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl)
   const list =
@@ -443,7 +461,7 @@ export async function fetchUserPlaylistsHtml(
         ? config.sources
         : DEFAULT_SOURCES
   const params = list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
-  return fetchText(`${base}/user_playlists?${params}`)
+  return fetchText(`${base}/user_playlists?${params}`, timeoutMs)
 }
 
 /**
@@ -454,6 +472,7 @@ export async function fetchCollectionSongsPage(
   config: GoMusicDlConfig,
   collection: { id: string; source: string },
   page = 1,
+  timeoutMs = 25000,
 ): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl)
   const url =
@@ -461,7 +480,7 @@ export async function fetchCollectionSongsPage(
     `?id=${encodeURIComponent(collection.id)}` +
     `&source=${encodeURIComponent(collection.source)}` +
     `&page=${page}`
-  return fetchText(url)
+  return fetchText(url, timeoutMs)
 }
 
 /**
