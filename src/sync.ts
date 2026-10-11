@@ -302,7 +302,7 @@ async function resolveLocalPlaylist(
   const created = await callHostApi('POST', '/api/v1/playlists', {
     name,
     type: 'normal',
-    cover_url: buildCoverProxyUrl(pl.cover || '', config.baseUrl),
+    cover_url: buildCoverProxyUrl(pl.cover || '', config.baseUrl, config.basePath),
   })
   if (!created || !created.id) {
     throw new Error('创建本地歌单失败')

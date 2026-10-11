@@ -64,6 +64,7 @@ export async function probeDownloadable(
       extra: (item.extra as Record<string, any>) || {},
     },
     config.baseUrl,
+    config.basePath,
   )
   if (!url) return 'dead' // baseUrl 为空：与旧口径一致按不可用处理（/import/batch 另有显式 400）
   // 超时兜底：X-Fetch-Timeout-Ms=6000（inspect 上游自带 5s client 超时，6s 是余量）

@@ -1,13 +1,19 @@
 // api.js — 网络/HTTP 层
 import { store, effectiveQuality } from './state.js'
 
-// go-music-dl 接口都在 /music 前缀下，根地址自动补上，避免拼出 /search 之类 404
-// 注意：后端 src/config.ts 有一份同实现拷贝（QuickJS/WebView 两个运行时无法共享模块），
-// 两处需同步修改。
-export function normalizeBaseUrl(raw) {
+// go-music-dl 接口都在 base path（默认 /music）前缀下，根地址按 Base Path 拼接，
+// 避免拼出 /search 之类 404。basePath 缺省时读 store.config.basePath（上游
+// --base-path 改过挂载路径时由配置页填写）。
+// 注意：后端 src/config.ts 有一份同实现拷贝（QuickJS/WebView 两个运行时无法共享
+// 模块），两处需同步修改。
+export function normalizeBaseUrl(raw, basePath) {
+  let p = basePath !== undefined && basePath !== null ? String(basePath) : (store.config.basePath || '/music')
+  p = (p || '').trim().replace(/\/+$/, '')
+  if (!p) p = '/music'
+  if (!p.startsWith('/')) p = '/' + p
   let u = (raw || '').trim().replace(/\/+$/, '')
   if (!u) return ''
-  if (!/\/music$/.test(u)) u += '/music'
+  if (!u.endsWith(p)) u += p
   return u
 }
 

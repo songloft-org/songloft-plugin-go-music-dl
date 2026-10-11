@@ -46,13 +46,22 @@ test('parsePlaylistCards 解析导入按钮 data-* 序列', () => {
 
 test('buildDownloadUrl / buildInspectUrl 拼参与 URL 编码', () => {
   const song = { id: 'a b', source: 'netease', name: '晴天', artist: '周', album: '', cover: '', duration: 269, extra: { level: 'hires' } }
-  const dl = buildDownloadUrl(song, 'http://h:8080', true)
+  const dl = buildDownloadUrl(song, 'http://h:8080', '/music', true)
   assert.equal(dl, 'http://h:8080/music/download?id=a%20b&source=netease&extra=%7B%22level%22%3A%22hires%22%7D&embed=1')
-  const stream = buildDownloadUrl(song, 'http://h:8080', false)
+  const stream = buildDownloadUrl(song, 'http://h:8080', '/music', false)
   assert.match(stream, /&stream=1$/)
-  const ins = buildInspectUrl(song, 'http://h:8080')
+  const ins = buildInspectUrl(song, 'http://h:8080', '/music')
   assert.equal(ins, 'http://h:8080/music/inspect?id=a%20b&source=netease&duration=269&extra=%7B%22level%22%3A%22hires%22%7D')
   assert.equal(buildInspectUrl(song, ''), '') // 未配置 baseUrl → 空串（上层按不可用处理）
+})
+
+test('buildDownloadUrl / buildInspectUrl 自定义 basePath（上游 --base-path）', () => {
+  const song = { id: 'x', source: 'qq', name: '歌', artist: '手', album: '', cover: '', duration: 1, extra: {} }
+  assert.match(buildDownloadUrl(song, 'http://h:8080', '/dl', true), /^http:\/\/h:8080\/dl\/download/)
+  assert.match(buildInspectUrl(song, 'http://h:8080', '/dl'), /^http:\/\/h:8080\/dl\/inspect/)
+  // basePath 缺省回退 /music（旧调用点兼容）
+  assert.match(buildDownloadUrl(song, 'http://h:8080', undefined, true), /^http:\/\/h:8080\/music\/download/)
+  assert.match(buildInspectUrl(song, 'http://h:8080'), /^http:\/\/h:8080\/music\/inspect/)
 })
 
 test('sortSongsByRelevance：精确原唱优先、衍生版本降权', () => {

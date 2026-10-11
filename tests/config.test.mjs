@@ -3,21 +3,27 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeConfig, hotPathSources, FAST_SOURCES, DEFAULT_SOURCES } from './.gen/config.mjs'
 
-test('normalizeConfig：baseUrl 补 /music 前缀、保存即归一（save 后缓存与落盘一致）', () => {
+test('normalizeConfig：地址根化收口、basePath 默认/归一（save 后缓存与落盘一致）', () => {
   const c = normalizeConfig({ baseUrl: 'http://192.168.1.190:8080' })
-  assert.equal(c.baseUrl, 'http://192.168.1.190:8080/music')
-  // 已带 /music 不重复追加
+  assert.equal(c.baseUrl, 'http://192.168.1.190:8080')
+  assert.equal(c.basePath, '/music')
+  // 已带 /music 结尾（旧版落盘形态）根化还原为根地址
   assert.equal(
     normalizeConfig({ baseUrl: 'http://192.168.1.190:8080/music' }).baseUrl,
-    'http://192.168.1.190:8080/music',
+    'http://192.168.1.190:8080',
   )
+  // 自定义 basePath：缺前导斜杠自动补
+  const dl = normalizeConfig({ baseUrl: 'http://192.168.1.190:8080', basePath: 'dl' })
+  assert.equal(dl.basePath, '/dl')
+  assert.equal(dl.baseUrl, 'http://192.168.1.190:8080')
   // 空值字段收口
   const empty = normalizeConfig({})
   assert.equal(empty.baseUrl, '')
+  assert.equal(empty.basePath, '/music')
   assert.equal(empty.externalBaseUrl, '')
   assert.equal(empty.serverHost, '')
   assert.deepEqual(empty.sources, DEFAULT_SOURCES)
-  // serverHost 只去空白/斜杠，不补 /music
+  // serverHost 只去空白/斜杠，不做根化之外的路径处理
   assert.equal(
     normalizeConfig({ serverHost: 'http://192.168.1.190:58091/' }).serverHost,
     'http://192.168.1.190:58091',
@@ -26,6 +32,32 @@ test('normalizeConfig：baseUrl 补 /music 前缀、保存即归一（save 后�
     normalizeConfig({ serverHost: 'http://192.168.1.190:58091' }).serverHost,
     'http://192.168.1.190:58091',
   )
+})
+
+test('normalizeConfig：旧版数据（无 basePath 字段）迁移剥离结尾 /music', () => {
+  // 旧版落盘 baseUrl/externalBaseUrl 均为「root + /music」强制追加形式
+  const legacy = normalizeConfig({
+    baseUrl: 'http://192.168.1.190:8080/music',
+    externalBaseUrl: 'https://gw.example.com/music',
+  })
+  assert.equal(legacy.baseUrl, 'http://192.168.1.190:8080')
+  assert.equal(legacy.externalBaseUrl, 'https://gw.example.com')
+  assert.equal(legacy.basePath, '/music')
+  // 运行时拼接结果与旧版行为一致
+  assert.equal(legacy.baseUrl + legacy.basePath, 'http://192.168.1.190:8080/music')
+  // 新版数据（basePath 字段存在）不做剥离：真实路径以 /music 结尾的部署不被误伤
+  const modern = normalizeConfig({
+    baseUrl: 'http://192.168.1.190:8080',
+    basePath: '/music',
+  })
+  assert.equal(modern.baseUrl, 'http://192.168.1.190:8080')
+  // 新版用户手填完整地址（罕见）：新数据不剥离保留原值，运行时 normalizeBaseUrl
+  // 的 endsWith 幂等兜底不重复追加
+  const modernFull = normalizeConfig({
+    baseUrl: 'http://192.168.1.190:8080/music',
+    basePath: '/music',
+  })
+  assert.equal(modernFull.baseUrl, 'http://192.168.1.190:8080/music')
 })
 
 test('FAST_SOURCES：与上游 GetDefaultSourceNames 对齐（8 源，不含 bilibili/joox/jamendo/fivesing/local）', () => {

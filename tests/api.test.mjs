@@ -2,10 +2,19 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { normalizeBaseUrl, isInternalHostname, classifyError, friendlyError } from '../static/js/api.js'
 
-test('normalizeBaseUrl 自动补 /music 前缀且幂等', () => {
+test('normalizeBaseUrl 按 basePath 拼接前缀且幂等', () => {
+  // 默认 Base Path = /music（未传 basePath 时读 store.config.basePath 默认值）
   assert.equal(normalizeBaseUrl('http://192.168.1.190:8080'), 'http://192.168.1.190:8080/music')
   assert.equal(normalizeBaseUrl('http://192.168.1.190:8080/'), 'http://192.168.1.190:8080/music')
   assert.equal(normalizeBaseUrl('http://192.168.1.190:8080/music'), 'http://192.168.1.190:8080/music')
+  // 自定义 Base Path（上游 --base-path /dl）
+  assert.equal(normalizeBaseUrl('http://192.168.1.190:8080', '/dl'), 'http://192.168.1.190:8080/dl')
+  assert.equal(normalizeBaseUrl('http://192.168.1.190:8080/', '/dl'), 'http://192.168.1.190:8080/dl')
+  assert.equal(normalizeBaseUrl('http://192.168.1.190:8080/dl', '/dl'), 'http://192.168.1.190:8080/dl')
+  // 无前导斜杠自动补
+  assert.equal(normalizeBaseUrl('http://192.168.1.190:8080', 'dl'), 'http://192.168.1.190:8080/dl')
+  // 空 Base Path 回退默认 /music
+  assert.equal(normalizeBaseUrl('http://192.168.1.190:8080', ''), 'http://192.168.1.190:8080/music')
   assert.equal(normalizeBaseUrl(''), '')
   assert.equal(normalizeBaseUrl('   '), '')
 })

@@ -20,6 +20,8 @@ export async function loadConfig() {
   document.getElementById('configBaseUrl').value = internal
   const extEl = document.getElementById('configExternalBaseUrl')
   if (extEl) extEl.value = external
+  const bpEl = document.getElementById('configBasePath')
+  if (bpEl) bpEl.value = store.config.basePath || '/music'
   const shEl = document.getElementById('configServerHost')
   if (shEl) shEl.value = store.config.serverHost || ''
   const dq = document.getElementById('configDefaultQuality')
@@ -64,6 +66,9 @@ export function autoFillServerHost() {
 
 export async function saveConfig() {
   const baseUrl = document.getElementById('configBaseUrl').value.trim()
+  const basePath = (
+    document.getElementById('configBasePath')?.value || ''
+  ).trim()
   const externalBaseUrl = (
     document.getElementById('configExternalBaseUrl')?.value || ''
   ).trim()
@@ -75,7 +80,7 @@ export async function saveConfig() {
   ).map((cb) => cb.value)
   const defaultQuality =
     document.getElementById('configDefaultQuality').value || 'exhigh'
-  store.config = { ...store.config, baseUrl, externalBaseUrl, serverHost, sources, defaultQuality }
+  store.config = { ...store.config, baseUrl, basePath, externalBaseUrl, serverHost, sources, defaultQuality }
   store.config.internalBaseUrl = baseUrl
   // 保存后立即按当前访问网络重选生效地址
   store.config.baseUrl = isExternalAccess() && externalBaseUrl ? externalBaseUrl : baseUrl
@@ -86,6 +91,7 @@ export async function saveConfig() {
     // 否则后端（导入/取链/歌词走内网）与下次加载的输入框都会错乱。
     await API.saveConfig({
       baseUrl,
+      basePath,
       externalBaseUrl,
       serverHost,
       sources,

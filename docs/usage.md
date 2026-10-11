@@ -4,7 +4,8 @@
 
 在插件设置页填写：
 
-- **go-music-dl 实例地址**：例如 `http://192.168.1.1:8080`（默认端口8080）。
+- **go-music-dl 实例地址**：例如 `http://192.168.1.1:8080`（默认端口8080）。填根地址即可。
+- **Base Path**：go-music-dl Web 服务的挂载路径，默认 `/music`。若 go-music-dl 启动时用 `--base-path` 参数改过挂载路径（如 `--base-path /dl`），请在此填写相同值，否则所有请求 404。详见 [go-music-dl Web 模式](https://github.com/guohuiyuan/go-music-dl#web-%E6%A8%A1%E5%BC%8F)。
 - **搜索音源**：勾选需要参与搜索的平台。
 
 ### 歌单同步（手动，单向）

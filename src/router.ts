@@ -158,6 +158,7 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
         extra: (song.extra as Record<string, any>) || {},
       },
       config.baseUrl,
+      config.basePath,
       true, // embed=1：宿主播放/下载都走「完整下载再回吐」，避免断流导致下载失败
     )
     if (!url) {
@@ -306,6 +307,7 @@ router.get('/stream/:token', async (req: HTTPRequest, params: any) => {
         extra: (song.extra as Record<string, any>) || {},
       },
       baseUrl,
+      config.basePath,
       false,
     )
     if (!upstream) {

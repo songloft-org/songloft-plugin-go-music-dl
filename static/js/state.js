@@ -52,7 +52,8 @@ export const MAX_SWITCH_ROUNDS = 4
 // 以兼容 ES Module 的不可变绑定语义（builder 仍会打包成单个 iife）。
 export const store = {
   config: {
-    baseUrl: '', // 运行时「当前网络下生效」的地址：内网=internalBaseUrl，外网=externalBaseUrl；留空=未配置（各入口有填写提示）
+    baseUrl: '', // 运行时「当前网络下生效」的根地址：内网=internalBaseUrl，外网=externalBaseUrl；留空=未配置（各入口有填写提示）
+    basePath: '/music', // go-music-dl Web 服务挂载路径（上游 --base-path 改过时需同步填写）
     internalBaseUrl: '', // 用户配置的内网/默认地址
     externalBaseUrl: '', // 外网访问时前端直连地址（可选）
     sources: [...ALL_SOURCES],

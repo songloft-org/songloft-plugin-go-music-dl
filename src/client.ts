@@ -96,7 +96,8 @@ async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
     }
     if (res.status === 404) {
       throw new Error(
-        'go-music-dl 接口不存在 (404)：请确认地址正确，且插件已自动补上 /music 前缀。',
+        'go-music-dl 接口不存在 (404)：请确认服务地址与 Base Path 配置正确' +
+          '（插件按 Base Path 拼接前缀，默认 /music；上游 --base-path 改过时需同步填写）。',
       )
     }
     throw new Error(`go-music-dl 请求失败: HTTP ${res.status}`)
@@ -118,7 +119,7 @@ async function fetchSearchHtml(
   pageSize: number,
   timeoutMs = 25000,
 ): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl)
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
   const sources =
     config.sources && config.sources.length ? config.sources : DEFAULT_SOURCES
   const params: string[] = [
@@ -380,9 +381,10 @@ export async function searchCollectionsPage(
 export function buildDownloadUrl(
   song: GoSong,
   baseUrl: string,
+  basePath?: string,
   embed = true,
 ): string {
-  const base = normalizeBaseUrl(baseUrl)
+  const base = normalizeBaseUrl(baseUrl, basePath)
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   return (
     `${base}/download` +
@@ -400,8 +402,8 @@ export function buildDownloadUrl(
  * 相比 download?stream=1（宿主 QuickJS fetch 会把整曲读进内存，上限 64MiB/首），
  * 用它做导入前探测的带宽与内存成本可忽略。
  */
-export function buildInspectUrl(song: GoSong, baseUrl: string): string {
-  const base = normalizeBaseUrl(baseUrl)
+export function buildInspectUrl(song: GoSong, baseUrl: string, basePath?: string): string {
+  const base = normalizeBaseUrl(baseUrl, basePath)
   if (!base) return ''
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   return (
@@ -419,7 +421,7 @@ export async function fetchLyric(
   config: GoMusicDlConfig,
   timeoutMs = 25000,
 ): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl)
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   const url =
     `${base}/download_lrc` +
@@ -453,7 +455,7 @@ export async function fetchUserPlaylistsHtml(
   sources?: string[],
   timeoutMs = 25000,
 ): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl)
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
   const list =
     sources && sources.length
       ? sources
@@ -474,7 +476,7 @@ export async function fetchCollectionSongsPage(
   page = 1,
   timeoutMs = 25000,
 ): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl)
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
   const url =
     `${base}/playlist` +
     `?id=${encodeURIComponent(collection.id)}` +
@@ -489,10 +491,14 @@ export async function fetchCollectionSongsPage(
  * （QuickJS/WebView 无法共享模块，两处需同步），宿主 GetPlaylistCover 仅在
  * CoverURL 非空时代理转发，故创建同步歌单时显式带上该地址。
  */
-export function buildCoverProxyUrl(rawCover: string, baseUrl: string): string {
+export function buildCoverProxyUrl(
+  rawCover: string,
+  baseUrl: string,
+  basePath?: string,
+): string {
   if (!rawCover) return ''
   if (/^(data:|blob:)/i.test(rawCover)) return rawCover
-  const base = normalizeBaseUrl(baseUrl)
+  const base = normalizeBaseUrl(baseUrl, basePath)
   if (!base) return rawCover
   if (rawCover.startsWith(base)) return rawCover // 已是本实例代理地址
   return `${base}/cover_proxy?url=${encodeURIComponent(rawCover)}`
