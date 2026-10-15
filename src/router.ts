@@ -32,6 +32,7 @@ import {
   karaokeToLxLyric,
 } from './lyrics-format'
 import { encodeToken, decodeToken, loopbackToLan } from './bridge-contract'
+import { toGoSong } from './client'
 import { callHostApi } from './host'
 import { QR_SOURCES, qrStart, qrPoll } from './qrlogin'
 import { clearCachedSession } from './gmd-auth'
@@ -41,6 +42,7 @@ import {
   resolveImportableItem,
   importRemoteSongs,
   importRemoteSong,
+  dedupKeyOf,
   BATCH_DEADLINE_MS,
   mapWithConcurrency,
 } from './import-core'
@@ -84,6 +86,9 @@ const hitCache = new TTLCache<GoSong>(600_000, 100) // 回搜命中
 const lyricCache = new TTLCache<Record<string, string>>(86_400_000, 200) // lyric-search 结果
 const lyricProxyCache = new TTLCache<string>(86_400_000, 200) // /api/lyric（前端）
 const coverCache = new TTLCache<string>(86_400_000, 200) // cover-search 结果
+// 回搜/取词失败短缓存（网络抖动、上游 5xx）：上游持续故障期间避免每次宿主调用
+// 都重新回搜（无正结果的兜底，60s 后自动重试）；与确定性"无歌词/无封面"（写主缓存）区分
+const searchFailCache = new TTLCache<true>(60_000, 50)
 const toplistCache = new TTLCache<GoTopList[]>(600_000, 10) // 榜单目录（变化慢）
 const toplistSongsCache = new TTLCache<GoSong[]>(300_000, 50) // 榜单歌曲
 const dlRecordsCache = new TTLCache<Record<string, boolean>>(600_000, 2) // 已下载标记（key 归一化）
@@ -105,7 +110,11 @@ function clearCaches(): void {
  * 按「标题+歌手」回搜歌曲（歌词/封面提供者共用）。
  * 宿主只传元数据无 source_data，需回搜后取词/封面；命中结果短期缓存，
  * 同一首歌的歌词与封面回搜共享，第二次调用零上游开销。
+ * in-flight 去重：宿主可能并发调用 lyric-search 与 cover-search（同一首歌），
+ * 未命中缓存时两个请求会各搜一次——用 pending Map 合并为一次上游搜索。
  */
+const hitPending = new Map<string, Promise<GoSong | null>>()
+
 async function findHitByTitleArtist(
   title: string,
   artist: string,
@@ -114,21 +123,31 @@ async function findHitByTitleArtist(
   const hitKey = `hit|${title}|${artist}`
   const cached = hitCache.get(hitKey)
   if (cached) return cached
-  // 宿主歌词提供者预算 15s/提供者（manager.go SearchLyrics）：
-  // 搜索 8s + 取词 5s，源集收窄为快源子集，确保整套「回搜→取词」能在预算内完成
-  const songs = await searchSongs(
-    `${title} ${artist}`.trim(),
-    { ...config, sources: hotPathSources(config) },
-    1,
-    5,
-    8000,
-  )
-  const hit =
-    songs.find((s) => s.name.includes(title) || title.includes(s.name)) ||
-    songs[0] ||
-    null
-  if (hit) hitCache.set(hitKey, hit)
-  return hit
+  const inflight = hitPending.get(hitKey)
+  if (inflight) return inflight
+  const pending = (async (): Promise<GoSong | null> => {
+    try {
+      // 宿主歌词提供者预算 15s/提供者（manager.go SearchLyrics）：
+      // 搜索 8s + 取词 5s，源集收窄为快源子集，确保整套「回搜→取词」能在预算内完成
+      const songs = await searchSongs(
+        `${title} ${artist}`.trim(),
+        { ...config, sources: hotPathSources(config) },
+        1,
+        5,
+        8000,
+      )
+      const hit =
+        songs.find((s) => s.name.includes(title) || title.includes(s.name)) ||
+        songs[0] ||
+        null
+      if (hit) hitCache.set(hitKey, hit)
+      return hit
+    } finally {
+      hitPending.delete(hitKey)
+    }
+  })()
+  hitPending.set(hitKey, pending)
+  return pending
 }
 
 // Uint8Array → string：String.fromCharCode.apply 展开大数组会超出 QuickJS 的
@@ -232,23 +251,13 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
     return jsonResponse({ error: 'source_data is required' }, 400)
   }
   const config = await getConfig()
-  const song = sourceData as unknown as GoSong
+  const song = toGoSong(sourceData)
   try {
     const url = buildDownloadUrl(
       {
-        id: String(song.id),
-        source: String(song.source),
-        name: String(song.name || ''),
-        artist: String(song.artist || ''),
-        album: String(song.album || ''),
-        cover: String(song.cover || ''),
-        duration: Number(song.duration) || 0,
+        ...song,
         // 网易云且未显式带 level 时注入默认音质（覆盖导入时未带品质的存量歌曲）
-        extra: applyDefaultQuality(
-          String(song.source || ''),
-          song.extra as Record<string, any>,
-          config,
-        ),
+        extra: applyDefaultQuality(song.source, song.extra, config),
       },
       config.baseUrl,
       config.basePath,
@@ -281,6 +290,11 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
 
 function isLoopbackHost(host: string): boolean {
   return /^(localhost|127\.0\.0\.1|0\.0\.0\.0|::1)$/i.test(host)
+}
+
+/** 完整 URL 的回环判定（makeDirectStreamUrl 兜底分支用，与 isLoopbackHost 同一口径） */
+function isLoopbackUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/i.test(url)
 }
 
 function buildStreamUrl(base: string, token: string): string {
@@ -321,6 +335,7 @@ async function makeDirectStreamUrl(song: GoSong): Promise<string | null> {
       const base = `http://${baseHost}:${port}`
       return buildStreamUrl(base, token)
     }
+    // （isLoopbackHost 为本文件唯一回环判定实现，两处兜底正则已收敛到此）
 
     // 3) getHostUrl 本身（非回环时可用）
     let base = ''
@@ -334,7 +349,7 @@ async function makeDirectStreamUrl(song: GoSong): Promise<string | null> {
     }
 
     // 4) 回环则尝试用网卡 LAN 地址替换主机部分（兜底）
-    if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:|\/|$)/i.test(base)) {
+    if (isLoopbackUrl(base)) {
       try {
         const addrs = await (globalThis as any).songloft?.plugin?.getNetworkAddresses?.()
         const lan = addrs && addrs[0]
@@ -353,7 +368,7 @@ async function makeDirectStreamUrl(song: GoSong): Promise<string | null> {
       console.log('[stream] no reachable host available (serverHost unset, all detection failed)')
       return null
     }
-    if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)/i.test(base)) {
+    if (isLoopbackUrl(base)) {
       // 仍为回环：音箱无法访问，返回 null 让上层回退入库播放
       console.log('[stream] resolved host is still loopback, give up:', base)
       return null
@@ -390,18 +405,8 @@ router.get('/stream/:token', async (req: HTTPRequest, params: any) => {
     // stream=1：实时流，支持 Range 透传；上游失效时 go-music-dl 返回 404/502，音箱识别为失效
     const upstream = buildDownloadUrl(
       {
-        id: String(song.id),
-        source: String(song.source),
-        name: String(song.name || ''),
-        artist: String(song.artist || ''),
-        album: String(song.album || ''),
-        cover: String(song.cover || ''),
-        duration: Number(song.duration) || 0,
-        extra: applyDefaultQuality(
-          String(song.source || ''),
-          song.extra as Record<string, any>,
-          config,
-        ),
+        ...song,
+        extra: applyDefaultQuality(song.source, song.extra, config),
       },
       baseUrl,
       config.basePath,
@@ -437,16 +442,7 @@ router.post('/cast/stream-url', async (req: HTTPRequest) => {
   if (!item || !item.id || !item.source) {
     return jsonResponse({ error: 'item is required' }, 400)
   }
-  const song: GoSong = {
-    id: String(item.id),
-    source: String(item.source),
-    name: String(item.name || ''),
-    artist: String(item.artist || ''),
-    album: String(item.album || ''),
-    cover: String(item.cover || ''),
-    duration: Number(item.duration) || 0,
-    extra: (item.extra as Record<string, any>) || {},
-  }
+  const song = toGoSong(item)
   try {
     const url = await makeDirectStreamUrl(song)
     return jsonResponse({ url: url || null })
@@ -517,7 +513,7 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
           cover: s.cover,
           extra: applyDefaultQuality(s.source, s.extra, config),
         },
-        dedup_key: `go-music-dl_${s.source}_${s.id}`,
+        dedup_key: dedupKeyOf(s.source, s.id),
       },
     }
     toponeCache.set(cacheKey, payload)
@@ -546,6 +542,7 @@ router.get('/lyric-search', async (req: HTTPRequest) => {
     const key = `lyric|${title}|${artist}|${album}|${duration}`
     const cached = lyricCache.get(key)
     if (cached) return jsonResponse(cached)
+    if (searchFailCache.get(`lyric|${key}`)) return jsonResponse(empty)
     // 宿主仅提供元数据，无 source_data，需按标题+歌手回搜再取歌词
     const hit = await findHitByTitleArtist(title, artist, config)
     if (!hit) {
@@ -567,6 +564,8 @@ router.get('/lyric-search', async (req: HTTPRequest) => {
     lyricCache.set(key, payload)
     return jsonResponse(payload)
   } catch (e) {
+    // 网络错误/上游异常：短缓存失败结果（60s），避免上游故障期间反复回搜
+    searchFailCache.set(`lyric|${title}|${artist}|${album}|${duration}`, true)
     return jsonResponse(empty)
   }
 })
@@ -584,15 +583,18 @@ router.get('/cover-search', async (req: HTTPRequest) => {
     const key = `cover|${title}|${artist}|${q.album || ''}`
     const cached = coverCache.get(key)
     if (cached !== undefined) return jsonResponse({ cover_url: cached })
+    if (searchFailCache.get(`cover|${key}`)) return jsonResponse({ cover_url: '' })
     const hit = await findHitByTitleArtist(title, artist, config)
     const coverUrl =
       hit && hit.cover
-        ? buildCoverProxyUrl(hit.cover, config.baseUrl, config.basePath)
+        ? buildCoverProxyUrl(hit.cover, config.baseUrl, config.basePath, isApiBackend(config))
         : ''
     // 空结果也缓存：无封面歌曲反复触发回搜只会白耗上游
     coverCache.set(key, coverUrl)
     return jsonResponse({ cover_url: coverUrl })
   } catch (e) {
+    // 网络错误/上游异常：短缓存失败结果（60s）
+    searchFailCache.set(`cover|${title}|${artist}|${q.album || ''}`, true)
     return jsonResponse({ cover_url: '' })
   }
 })
@@ -921,11 +923,7 @@ router.get('/toplists', async (req: HTTPRequest) => {
   if (isApiBackend(config)) {
     return jsonResponse({ error: 'go-music-api 后端暂不支持排行榜' }, 400)
   }
-  const q = parseQuery(req.query)
-  const sources = String(q.sources || '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
+  const sources = sourcesFromQuery(req)
   if (!config.baseUrl) {
     return jsonResponse({ error: '服务地址未配置，请先在设置中填写' }, 400)
   }

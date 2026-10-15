@@ -32,6 +32,12 @@ export function isExternalAccess() {
   return !isInternalHostname(location.hostname)
 }
 
+// 上游 401（前端直连功能）统一文案：直连请求不经过插件后端，无法用「gmd 管理员账号」
+// 自动登录（凭据仅对走插件后端的链路生效），故口径是关闭登录/换地址。
+// 后端链路的 401 文案在 src/client.ts fetchText（那边填凭据可自愈），两侧口径不同是有意区分。
+export const UPSTREAM_AUTH_HINT =
+  'go-music-dl 启用了登录鉴权，此功能不可用；请在 go-music-dl 端关闭登录，或改用免鉴权地址'
+
 // 宿主会把 access_token 注入 localStorage['songloft-auth']，插件 API 需要带 Bearer 头
 function getAuthHeaders() {
   const headers = { 'Content-Type': 'application/json' }
@@ -257,7 +263,9 @@ export function classifyError(e) {
   const msg = e && e.message ? String(e.message) : ''
   const name = (e && e.name) || ''
   // 1) 鉴权失效：401 未授权 / 登录态过期 / cookie 失效
-  if (/401|未授权|未登录|登录失效|鉴权|token|cookie/i.test(msg) || name === 'AuthError') {
+  // token/cookie 仅匹配明确的失效语义（"invalid token"、业务错误里的 cookie 字样
+  // 不应一律归为鉴权问题）；401/未授权/登录失效仍直接命中
+  if (/401|未授权|未登录|登录失效|鉴权|token (expired|invalid)|cookie (失效|过期)/i.test(msg) || name === 'AuthError') {
     return { category: ERR_AUTH, detail: msg }
   }
   // 2) 音源失效：后端明确告知音源不可用 / 已下架
@@ -372,28 +380,58 @@ export async function switchSource(song, opts = {}) {
   }
 }
 
-// 调 go-music-dl /inspect 拿歌曲可达性与比特率：{ valid, bitrate }
+// 调上游 /inspect 拿歌曲可达性与比特率：{ valid, bitrate }
 // valid=true 可播 / false 失效 / null 网络请求错误。统一放这里供 songlist（列表徽标）
 // 与 player（播放条音质识别）共用——原先两处各写一份，曾出现实现漂移。
+// gmd：/music/inspect（id/source/duration/extra）；go-music-api：/api/v1/music/inspect
+// （仅 id/source/duration，端点路径与参数集不同——漏分流会把全部歌曲误标失效）。
+// inspect 结果短 memo：同一首歌会被列表徽标（scheduleInspect 逐卡检测）、
+// 切多选模式重渲染、播放条音质识别重复调用 2-3 次，45s 内直接复用结果。
+// key 与 songlist.js songKey 同格式（source__id），两处需同步。
+const INSPECT_MEMO_TTL = 45_000
+const inspectMemo = new Map() // key -> { at, result }
+function inspectMemoKey(song) {
+  return `${(song && song.source) || ''}__${song && song.id != null ? song.id : ''}`
+}
+
 export async function inspectSong(song) {
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) return { valid: null, bitrate: '' }
+  const memoKey = inspectMemoKey(song)
+  const memoHit = inspectMemo.get(memoKey)
+  if (memoHit && Date.now() - memoHit.at < INSPECT_MEMO_TTL) return memoHit.result
   // 与 buildStreamUrl 同款：网易云注入音质档位，使列表显示的 bitrate = 实际播放音质
   const extra = { ...(song.extra || {}) }
   if (song.source === 'netease') extra.level = effectiveQuality()
-  const p = new URLSearchParams({
-    id: song.id,
-    source: song.source,
-    duration: song.duration || 0,
-    extra: JSON.stringify(extra),
-  })
+  const url =
+    store.config.backendType === 'api'
+      ? `${base}/api/v1/music/inspect?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(song.source)}&duration=${song.duration || 0}`
+      : (() => {
+          const p = new URLSearchParams({
+            id: song.id,
+            source: song.source,
+            duration: song.duration || 0,
+            extra: JSON.stringify(extra),
+          })
+          return `${base}/inspect?${p.toString()}`
+        })()
   try {
-    const res = await gmdFetch(`${base}/inspect?${p.toString()}`, {
+    const res = await gmdFetch(url, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
-    if (!res.ok) return { valid: false, bitrate: '' }
-    const j = await res.json()
-    return { valid: !!(j && j.valid === true), bitrate: (j && j.bitrate) || '' }
+    const result = !res.ok
+      ? { valid: false, bitrate: '' }
+      : await res
+          .json()
+          .then((j) => ({ valid: !!(j && j.valid === true), bitrate: (j && j.bitrate) || '' }))
+          .catch(() => ({ valid: false, bitrate: '' }))
+    inspectMemo.set(memoKey, { at: Date.now(), result })
+    // 容量兜底：Map 按插入序淘汰最旧（检查会话切换后旧条目不再有命中率）
+    if (inspectMemo.size > 300) {
+      const oldest = inspectMemo.keys().next().value
+      if (oldest !== undefined) inspectMemo.delete(oldest)
+    }
+    return result
   } catch {
     return { valid: null, bitrate: '' }
   }

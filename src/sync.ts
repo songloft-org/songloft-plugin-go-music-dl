@@ -24,6 +24,7 @@ import {
   parsePagination,
   GoSong,
 } from './client'
+import { dedupKeyOf } from './import-core'
 import { callHostApi } from './host'
 import {
   SongItem,
@@ -77,10 +78,8 @@ export function bindingKeyOf(source: string, remoteId: string): string {
   return `${source}__pl__${remoteId}`
 }
 
-/** 宿主 remote 歌曲的 dedup_key（与 import-core toRemoteSongRequest 同格式） */
-export function dedupKeyOf(source: string, id: string): string {
-  return `go-music-dl_${source}_${id}`
-}
+// dedup_key 格式真源已收口到 import-core（dedupKeyOf），此处 re-export 供既有引用兼容
+export { dedupKeyOf }
 
 /**
  * 增量 diff：远端全量歌曲 vs 本地歌单现有 dedup_key 集合 → 需要新增的歌曲。
@@ -198,12 +197,11 @@ async function fetchNextPage(s: SyncSession): Promise<boolean> {
     }
     const songs = await fetchCollectionSongsApi(s.config, s.pl)
     s.page = 1
-    if (!songs.length) {
-      throw new Error('歌单为空或读取失败（go-music-api）')
-    }
     s.remote.push(...songs)
     s.totalPages = 1
     s.fetchDone = true
+    // 空歌单不抛错：与 gmd 模式语义对齐（prepare 阶段按「远端歌单为空」正常收尾，
+    // 用户看到的是"无新增"而非"同步失败"）
     return false
   }
   let html: string
@@ -315,11 +313,11 @@ async function resolveLocalPlaylist(
   }
   const existed = candidates.find((p: any) => p && p.name === name && p.id)
   if (existed) return Number(existed.id)
-  // 3) 创建（封面走 go-music-dl cover_proxy 代理，规避防盗链空白封面）
+  // 3) 创建（封面走上游封面代理，规避防盗链空白封面；api 模式为 /api/v1/music/cover）
   const created = await callHostApi('POST', '/api/v1/playlists', {
     name,
     type: 'normal',
-    cover_url: buildCoverProxyUrl(pl.cover || '', config.baseUrl, config.basePath),
+    cover_url: buildCoverProxyUrl(pl.cover || '', config.baseUrl, config.basePath, isApiBackend(config)),
   })
   if (!created || !created.id) {
     throw new Error('创建本地歌单失败')

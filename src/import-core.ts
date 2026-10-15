@@ -4,7 +4,7 @@
 
 import type { GoMusicDlConfig } from './config'
 import { isApiBackend } from './config'
-import { buildInspectUrl } from './client'
+import { buildInspectUrl, toGoSong } from './client'
 
 export interface SongItem {
   id: string
@@ -15,6 +15,12 @@ export interface SongItem {
   source: string
   duration: number
   extra: Record<string, any>
+}
+
+/** dedup_key 唯一格式（宿主入库按 entryPath+dedup_key 去重）——此前 sync.ts / router.ts
+ *  各有一份内联拷贝，格式一变三处必须同变，统一收口于此。 */
+export function dedupKeyOf(source: string, id: string): string {
+  return `go-music-dl_${source}_${id}`
 }
 
 export function toRemoteSongRequest(item: SongItem) {
@@ -35,7 +41,7 @@ export function toRemoteSongRequest(item: SongItem) {
       cover: item.cover,
       extra: item.extra,
     }),
-    dedup_key: `go-music-dl_${item.source}_${item.id}`,
+    dedup_key: dedupKeyOf(item.source, item.id),
   }
 }
 
@@ -54,16 +60,7 @@ export async function probeDownloadable(
 ): Promise<'ok' | 'dead' | 'unknown'> {
   if (deadline?.hit) return 'unknown'
   const url = buildInspectUrl(
-    {
-      id: String(item.id),
-      source: String(item.source),
-      name: String(item.name || ''),
-      artist: String(item.artist || ''),
-      album: String(item.album || ''),
-      cover: String(item.cover || ''),
-      duration: Number(item.duration) || 0,
-      extra: (item.extra as Record<string, any>) || {},
-    },
+    toGoSong(item),
     config.baseUrl,
     config.basePath,
     isApiBackend(config),

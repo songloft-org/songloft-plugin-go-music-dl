@@ -90,9 +90,10 @@ async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
   }
   if (!res.ok) {
     if (res.status === 401) {
+      // 401 文案口径（与前端常量 UPSTREAM_AUTH_HINT 配套，但视角不同）：
+      // 此处是「插件后端链路」——填写 gmd 管理员账号可自动登录修复（gmd-auth）。
       throw new Error(
-        'go-music-dl 返回 401：该实例启用了登录鉴权。请在 go-music-dl 端关闭登录，' +
-          '或改用无需鉴权的地址。',
+        'go-music-dl 已开启登录鉴权：请在插件设置→账号登录填写管理员账号，或在上游关闭登录',
       )
     }
     if (res.status === 404) {
@@ -104,6 +105,34 @@ async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
     throw new Error(`go-music-dl 请求失败: HTTP ${res.status}`)
   }
   return await res.text()
+}
+
+/**
+ * 归一化音源列表：显式给定的 sources 优先，否则用用户配置，再退默认全量。
+ * 此前这段三级兜底链在 client.ts 内有 7 处拷贝，统一收口于此。
+ */
+export function resolveSources(config: GoMusicDlConfig, sources?: string[]): string[] {
+  if (sources && sources.length) return sources
+  if (config.sources && config.sources.length) return config.sources
+  return DEFAULT_SOURCES
+}
+
+/**
+ * 任意来源的歌曲对象（上游 JSON / 宿主请求体 / 前端卡片数据）→ 严格 GoSong。
+ * 字段一律 String()/Number() 收口，缺省兜底空值——此前 router 三处与 import-core
+ * 各有一份同构拷贝，统一收口于此。
+ */
+export function toGoSong(x: any, fallbackSource = ''): GoSong {
+  return {
+    id: String((x && x.id) ?? ''),
+    source: String((x && x.source) || fallbackSource || ''),
+    name: String((x && x.name) || ''),
+    artist: String((x && x.artist) || ''),
+    album: String((x && x.album) || ''),
+    cover: String((x && x.cover) || ''),
+    duration: Number(x && x.duration) || 0,
+    extra: (x && x.extra) || {},
+  }
 }
 
 export type SearchType = 'song' | 'playlist' | 'album'
@@ -137,18 +166,9 @@ async function fetchApiJson(
   return payload.data
 }
 
-/** api model.Song → 插件 GoSong（字段名一致，收口类型） */
+/** api model.Song → 插件 GoSong（字段名一致，直接复用 toGoSong 归一） */
 export function mapApiSong(s: any, fallbackSource: string): GoSong {
-  return {
-    id: String((s && s.id) ?? ''),
-    source: String((s && s.source) || fallbackSource || ''),
-    name: String((s && s.name) || ''),
-    artist: String((s && s.artist) || ''),
-    album: String((s && s.album) || ''),
-    cover: String((s && s.cover) || ''),
-    duration: Number(s && s.duration) || 0,
-    extra: (s && s.extra) || {},
-  }
+  return toGoSong(s, fallbackSource)
 }
 
 /** api model.Playlist → 插件 GoCollection */
@@ -165,9 +185,9 @@ export function mapApiPlaylist(p: any, fallbackSource: string): GoCollection {
 }
 
 function apiSourcesParam(config: GoMusicDlConfig): string {
-  const sources =
-    config.sources && config.sources.length ? config.sources : DEFAULT_SOURCES
-  return sources.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
+  return resolveSources(config)
+    .map((s) => `sources=${encodeURIComponent(s)}`)
+    .join('&')
 }
 
 /** api 模式综合搜索：type=song/playlist/album，返回全量（无分页参数） */
@@ -189,9 +209,8 @@ async function apiSearchAll(
     )
     return { songs, collections: [] }
   }
-  const raw = Array.isArray(data && (type === 'playlist' ? data.playlists : data.albums))
-    ? data[type === 'playlist' ? 'playlists' : 'albums']
-    : []
+  const key = type === 'playlist' ? 'playlists' : 'albums'
+  const raw = Array.isArray(data && data[key]) ? data[key] : []
   const collections = raw.map((p: any) => ({
     ...mapApiPlaylist(p, sourceOf(p)),
     contentType: type === 'album' ? ('album' as const) : ('playlist' as const),
@@ -204,6 +223,27 @@ export function slicePage<T>(items: T[], page: number): { items: T[]; total: num
   const totalPages = Math.max(1, Math.ceil(total / API_PAGE_SIZE))
   const p = Math.min(Math.max(1, page), totalPages)
   return { items: items.slice((p - 1) * API_PAGE_SIZE, p * API_PAGE_SIZE), total, totalPages }
+}
+
+/** api 模式分页构造：内存切片 + 分页摘要（对齐 gmd parsePagination 的字段语义） */
+function buildPagination<T>(
+  items: T[],
+  page: number,
+): { items: T[]; pagination: Pagination } {
+  const { items: pageItems, total, totalPages } = slicePage(items, page)
+  const p = Math.min(Math.max(1, page), totalPages)
+  const pageStart = total === 0 ? 0 : (p - 1) * API_PAGE_SIZE + 1
+  return {
+    items: pageItems,
+    pagination: {
+      page: p,
+      totalPages,
+      total,
+      pageStart,
+      pageEnd: pageStart + pageItems.length - 1,
+      inferred: true,
+    },
+  }
 }
 
 /**
@@ -219,8 +259,7 @@ async function fetchSearchHtml(
   timeoutMs = 25000,
 ): Promise<string> {
   const base = normalizeBaseUrl(config.baseUrl, config.basePath)
-  const sources =
-    config.sources && config.sources.length ? config.sources : DEFAULT_SOURCES
+  const sources = resolveSources(config)
   const params: string[] = [
     `q=${encodeURIComponent(keyword)}`,
     `type=${type}`,
@@ -330,10 +369,10 @@ export async function searchSongs(
   timeoutMs = 25000,
 ): Promise<GoSong[]> {
   if (isApiBackend(config)) {
-    const { songs } = await apiSearchAll(keyword, config, 'song', timeoutMs)
-    const sorted = sortSongsByRelevance(songs, keyword)
-    // api 无分页参数：全量返回后内存切片（宿主 L2/回搜只取前 N 条，切片开销可忽略）
-    return sorted.slice((Math.max(1, page) - 1) * pageSize, Math.max(1, page) * pageSize)
+    // api 无分页参数：searchSongsPage 内做内存切片（切片大小与调用方 pageSize 无关，
+    // 由调用方再截取——宿主 L2/回搜只取前 N 条，开销可忽略）
+    const { items } = await searchSongsPage(keyword, config, page, timeoutMs)
+    return items.slice(0, pageSize)
   }
   const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize, timeoutMs)
   const items = parseSongCards(html)
@@ -388,19 +427,8 @@ export async function searchSongsPage(
   if (isApiBackend(config)) {
     const { songs } = await apiSearchAll(keyword, config, 'song', timeoutMs)
     const sorted = sortSongsByRelevance(songs, keyword)
-    const { items, total, totalPages } = slicePage(sorted, page)
-    const pageStart = total === 0 ? 0 : (Math.min(Math.max(1, page), totalPages) - 1) * API_PAGE_SIZE + 1
-    return {
-      items,
-      pagination: {
-        page: Math.min(Math.max(1, page), totalPages),
-        totalPages,
-        total,
-        pageStart,
-        pageEnd: pageStart + items.length - 1,
-        inferred: true,
-      },
-    }
+    const { items, pagination } = buildPagination(sorted, page)
+    return { items, pagination }
   }
   const html = await fetchSearchHtml(keyword, config, 'song', page, 0, timeoutMs)
   const items = parseSongCards(html)
@@ -453,22 +481,6 @@ export function parsePlaylistCards(html: string): GoCollection[] {
   return cards
 }
 
-export async function searchCollections(
-  keyword: string,
-  config: GoMusicDlConfig,
-  type: 'playlist' | 'album',
-  page = 1,
-  pageSize = 50,
-  timeoutMs = 25000,
-): Promise<GoCollection[]> {
-  if (isApiBackend(config)) {
-    const { collections } = await apiSearchAll(keyword, config, type, timeoutMs)
-    return collections.slice((Math.max(1, page) - 1) * pageSize, Math.max(1, page) * pageSize)
-  }
-  const html = await fetchSearchHtml(keyword, config, type, page, pageSize, timeoutMs)
-  return parsePlaylistCards(html)
-}
-
 /**
  * 分页搜索歌单/专辑：pageSize 传 0，跟随 go-music-dl 的 WebPageSize。
  * 返回卡片列表与分页元信息。
@@ -482,19 +494,8 @@ export async function searchCollectionsPage(
 ): Promise<{ items: GoCollection[]; pagination: Pagination }> {
   if (isApiBackend(config)) {
     const { collections } = await apiSearchAll(keyword, config, type, timeoutMs)
-    const { items, total, totalPages } = slicePage(collections, page)
-    const pageStart = total === 0 ? 0 : (Math.min(Math.max(1, page), totalPages) - 1) * API_PAGE_SIZE + 1
-    return {
-      items,
-      pagination: {
-        page: Math.min(Math.max(1, page), totalPages),
-        totalPages,
-        total,
-        pageStart,
-        pageEnd: pageStart + items.length - 1,
-        inferred: true,
-      },
-    }
+    const { items, pagination } = buildPagination(collections, page)
+    return { items, pagination }
   }
   const html = await fetchSearchHtml(keyword, config, type, page, 0, timeoutMs)
   const items = parsePlaylistCards(html)
@@ -527,6 +528,9 @@ export function buildDownloadUrl(
   embed = true,
 ): string {
   const base = normalizeBaseUrl(baseUrl, basePath)
+  // base 为空（未配置服务地址）返回空串：调用方的 if (!url) 404 守卫依赖此约定，
+  // 否则会静默生成 "/download?..." 相对路径 URL，把配置错误伪装成运行时错误。
+  if (!base) return ''
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   return (
     `${base}/download` +
@@ -631,29 +635,6 @@ export async function fetchLyric(
   return classifyLyricFormat(raw) === 'karaoke'
     ? collapseKaraokeToLines(raw)
     : raw
-}
-
-/**
- * 拉取 go-music-dl 已登录账号的个人歌单页（HTML）。
- * 仅 netease/qq/kugou/soda 支持账号歌单（core.GetUserPlaylistSourceNames），
- * 全部要求 go-music-dl 网页端已扫码登录（cookie 在 go-music-dl 侧）。
- * 与前端「我的歌单」同源同实现（前端 playlists.js 用 DOMParser 解析，
- * 后端 QuickJS 无 DOM，用 parseSongCards 同构的正则通道）。
- */
-export async function fetchUserPlaylistsHtml(
-  config: GoMusicDlConfig,
-  sources?: string[],
-  timeoutMs = 25000,
-): Promise<string> {
-  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
-  const list =
-    sources && sources.length
-      ? sources
-      : config.sources && config.sources.length
-        ? config.sources
-        : DEFAULT_SOURCES
-  const params = list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
-  return fetchText(`${base}/user_playlists?${params}`, timeoutMs)
 }
 
 /**
@@ -777,12 +758,7 @@ export async function fetchTopLists(
   timeoutMs = 25000,
 ): Promise<GoTopList[]> {
   const base = normalizeBaseUrl(config.baseUrl, config.basePath)
-  const list =
-    sources && sources.length
-      ? sources
-      : config.sources && config.sources.length
-        ? config.sources
-        : DEFAULT_SOURCES
+  const list = resolveSources(config, sources)
   const params = list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
   const html = await fetchText(`${base}/toplists?${params}`, timeoutMs)
   return parseTopListCards(html)
@@ -822,13 +798,9 @@ export async function fetchDownloadRecords(
   timeoutMs = 10000,
 ): Promise<GoDownloadRecord[]> {
   const base = normalizeBaseUrl(config.baseUrl, config.basePath)
-  const out: GoDownloadRecord[] = []
-  for (let page = 1; page <= Math.max(1, pages); page++) {
-    const data: any = await requestJsonAny(
-      `${base}/api/downloads/records?page=${page}&page_size=100`,
-      timeoutMs,
-    )
+  const collect = (data: any): GoDownloadRecord[] => {
     const records = Array.isArray(data && data.records) ? data.records : []
+    const out: GoDownloadRecord[] = []
     for (const r of records) {
       if (r && typeof r.name === 'string') {
         out.push({
@@ -839,8 +811,25 @@ export async function fetchDownloadRecords(
         })
       }
     }
-    const totalPages = Number(data && data.total_pages) || 1
-    if (page >= totalPages) break
+    return out
+  }
+  // 首页先拿 total_pages，剩余页并行（单页失败跳过——记录是增强信息）
+  const first = await requestJsonAny(
+    `${base}/api/downloads/records?page=1&page_size=100`,
+    timeoutMs,
+  )
+  const out = collect(first)
+  const totalPages = Math.min(Number(first && first.total_pages) || 1, Math.max(1, pages))
+  if (totalPages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: totalPages - 1 }, (_, i) =>
+        requestJsonAny(
+          `${base}/api/downloads/records?page=${i + 2}&page_size=100`,
+          timeoutMs,
+        ).catch(() => null),
+      ),
+    )
+    for (const data of rest) out.push(...collect(data))
   }
   return out
 }
@@ -861,12 +850,7 @@ export async function fetchUserPlaylistsApi(
   sources?: string[],
   timeoutMs = 15000,
 ): Promise<GoCollection[]> {
-  const list =
-    sources && sources.length
-      ? sources
-      : config.sources && config.sources.length
-        ? config.sources
-        : DEFAULT_SOURCES
+  const list = resolveSources(config, sources)
   const supported = list.filter((s) =>
     ['netease', 'qq', 'kugou'].includes(s),
   )
@@ -894,12 +878,7 @@ export async function fetchRecommendApi(
   sources?: string[],
   timeoutMs = 20000,
 ): Promise<GoCollection[]> {
-  const list =
-    sources && sources.length
-      ? sources
-      : config.sources && config.sources.length
-        ? config.sources
-        : DEFAULT_SOURCES
+  const list = resolveSources(config, sources)
   const data = await fetchApiJson(
     config,
     `/playlist/recommend?${list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')}`,
@@ -922,12 +901,7 @@ export async function fetchCategoriesApi(
   sources?: string[],
   timeoutMs = 20000,
 ): Promise<ApiCategorySource[]> {
-  const list =
-    sources && sources.length
-      ? sources
-      : config.sources && config.sources.length
-        ? config.sources
-        : DEFAULT_SOURCES
+  const list = resolveSources(config, sources)
   const data = await fetchApiJson(
     config,
     `/playlist/categories?${list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')}`,

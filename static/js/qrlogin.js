@@ -2,6 +2,7 @@
 // Cookie 由 go-music-dl 落库，本模块只做「创建会话 → 展示二维码 → 轮询状态」；
 // image_url 优先（qq/qq_wx 有官方图），否则用内置 qrcode.js 把 url 画成二维码。
 import { API } from './api.js'
+import { sourceLabel } from './state.js'
 import { showSnackbar } from './util.js'
 import { drawQRToCanvas } from './qrcode.js'
 
@@ -158,17 +159,16 @@ export function initQrLogin() {
     refreshBtn.onclick = () => {
       if (state.source) start(state.source)
     }
-  // 平台卡片：后端 /qr/sources 拉列表（失败用内置兜底在 index.html 静态渲染）
+  // 平台卡片：后端 /qr/sources 拉列表，失败时用 SOURCE_LABELS 派生的兜底列表
   renderSourceCards().catch(() => {})
 }
 
-const FALLBACK_SOURCES = [
-  { source: 'netease', name: '网易云音乐' },
-  { source: 'qq', name: 'QQ 音乐' },
-  { source: 'qq_wx', name: 'QQ 音乐（微信）' },
-  { source: 'kugou', name: '酷狗音乐' },
-  { source: 'bilibili', name: 'Bilibili' },
-]
+// 兜底源列表：由 state.js 的 SOURCE_LABELS 派生（名称单点），仅在后端 /qr/sources
+// 不可用时使用（正常应与其后端 QR_SOURCES 内容一致）
+const FALLBACK_SOURCES = ['netease', 'qq', 'qq_wx', 'kugou', 'bilibili'].map((s) => ({
+  source: s,
+  name: sourceLabel(s) || s,
+}))
 
 // 渠道布局：同一平台的多个扫码渠道（qq=QQ App 扫 / qq_wx=微信扫，两者 Cookie 均写入
 // gmd 的 qq 名下，见上游 qr_login.go qrLoginCookieSource 的归并）合并一行展示，

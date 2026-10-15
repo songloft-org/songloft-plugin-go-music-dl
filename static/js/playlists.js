@@ -13,6 +13,7 @@ import {
   isNetworkError,
   buildCoverUrl,
   friendlyError,
+  UPSTREAM_AUTH_HINT,
 } from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
 import { importCollectionAsPlaylist } from './imports.js'
@@ -263,7 +264,7 @@ export async function loadUserPlaylists() {
     const url = `${base}/user_playlists?sources=${sources.map(encodeURIComponent).join('&sources=')}`
     const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (res.status === 401) {
-      listEl.innerHTML = '<div class="empty-state">go-music-dl 启用了登录鉴权，请改用无需鉴权的地址</div>'
+      listEl.innerHTML = `<div class="empty-state">${UPSTREAM_AUTH_HINT}</div>`
       return
     }
     if (!res.ok) {
@@ -526,6 +527,15 @@ export function backToPlaylists() {
 async function loadAllCollectionSongs(pl, endpoint) {
   // all_songs：榜单等内存列表，歌曲已在 pl.songs，直接返回
   if (endpoint === 'all_songs') return pl.songs || []
+  // go-music-api 模式：详情 JSON 全量返回（无分页），一次请求拿全
+  if (store.config.backendType === 'api') {
+    try {
+      const r = await API.backendCollectionSongs(endpoint === 'album' ? 'album' : 'playlist', pl.id, pl.source)
+      return Array.isArray(r.items) ? r.items : []
+    } catch {
+      return []
+    }
+  }
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) return []
   const all = []

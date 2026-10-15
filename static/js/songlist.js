@@ -11,7 +11,7 @@ import { switchSource, buildCoverUrl, inspectSong } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
 import { savePlaybackState } from './persist.js'
-import { isDownloaded, ensureDownloaded, markListDownloaded, downloadedKey } from './downloaded.js'
+import { isDownloaded, markListDownloaded, downloadedKey } from './downloaded.js'
 
 export function songKey(s) {
   return `${s.source || ''}__${(s.id != null ? s.id : '')}`

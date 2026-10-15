@@ -12,6 +12,7 @@ import {
   gmdFetch,
   friendlyError,
   buildCoverUrl,
+  UPSTREAM_AUTH_HINT,
 } from './api.js'
 import { parsePlaylists } from './playlists.js'
 
@@ -137,35 +138,37 @@ async function loadPanel() {
   }
   listEl.innerHTML = '<div class="empty-state">正在获取账号歌单…</div>'
   try {
-    // 并行：账号歌单 HTML（前端直连，与「我的歌单」tab 同源）+ 绑定列表（插件后端）
+    // 并行：账号歌单（gmd 直连 HTML / api 走后端 JSON 聚合）+ 绑定列表（插件后端）
     const sources =
       store.config.sources && store.config.sources.length
         ? store.config.sources
         : ALL_SOURCES
-    const qs = sources.map(encodeURIComponent).join('&sources=')
-    const url = `${base()}/user_playlists?sources=${qs}`
-    const [res, bindRes] = await Promise.all([
-      gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } }),
-      API.syncBindings()
-        .catch((e) => {
-          console.warn('[syncPanel] 获取绑定列表失败:', e)
-          showSnackbar('绑定信息加载失败，将显示为未同步状态', true)
-          return null
-        }),
-    ])
-    if (res.status === 401) {
-      listEl.innerHTML =
-        '<div class="empty-state">go-music-dl 启用了登录鉴权，请改用无需鉴权的地址</div>'
-      updateRunBtn()
-      return
+    const bindRes = await API.syncBindings().catch((e) => {
+      console.warn('[syncPanel] 获取绑定列表失败:', e)
+      showSnackbar('绑定信息加载失败，将显示为未同步状态', true)
+      return null
+    })
+    let remote
+    if (store.config.backendType === 'api') {
+      // go-music-api 模式：账号歌单走插件后端逐源聚合（未登录源自动跳过）
+      const r = await API.backendUserPlaylists(sources)
+      remote = Array.isArray(r.items) ? r.items : []
+    } else {
+      const qs = sources.map(encodeURIComponent).join('&sources=')
+      const url = `${base()}/user_playlists?sources=${qs}`
+      const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      if (res.status === 401) {
+        listEl.innerHTML = `<div class="empty-state">${UPSTREAM_AUTH_HINT}</div>`
+        updateRunBtn()
+        return
+      }
+      if (!res.ok) {
+        listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
+        updateRunBtn()
+        return
+      }
+      remote = parsePlaylists(await res.text())
     }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
-      updateRunBtn()
-      return
-    }
-    const html = await res.text()
-    let remote = parsePlaylists(html)
     if (currentSourceFilter && currentSourceFilter !== 'all') {
       remote = remote.filter((pl) => pl.source === currentSourceFilter)
     }
@@ -173,7 +176,7 @@ async function loadPanel() {
       const emptyMsg =
         currentSourceFilter && currentSourceFilter !== 'all'
           ? `未获取到「${sourceLabel(currentSourceFilter) || currentSourceFilter}」账号歌单`
-          : '未获取到账号歌单：请先在 go-music-dl 网页端扫码登录（支持网易云 / QQ / 酷狗 / 汽水），或检查服务地址'
+          : '未获取到账号歌单：请先在设置→账号登录完成平台扫码（支持网易云 / QQ / 酷狗），或检查服务地址'
       listEl.innerHTML = `<div class="empty-state">${escapeHtml(emptyMsg)}</div>`
       updateRunBtn()
       return

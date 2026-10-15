@@ -54,6 +54,7 @@ test('buildDownloadUrl / buildInspectUrl 拼参与 URL 编码', () => {
   const ins = buildInspectUrl(song, 'http://h:8080', '/music')
   assert.equal(ins, 'http://h:8080/music/inspect?id=a%20b&source=netease&duration=269&extra=%7B%22level%22%3A%22hires%22%7D')
   assert.equal(buildInspectUrl(song, ''), '') // 未配置 baseUrl → 空串（上层按不可用处理）
+  assert.equal(buildDownloadUrl(song, ''), '') // 同上：空 base 返回空串（router 的 404 守卫依赖此约定）
 })
 
 test('buildDownloadUrl / buildInspectUrl 自定义 basePath（上游 --base-path）', () => {

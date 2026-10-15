@@ -8,7 +8,7 @@ import {
   sourceLabel,
   FALLBACK_COVER,
 } from './state.js'
-import { normalizeBaseUrl, gmdFetch, isNetworkError, API } from './api.js'
+import { normalizeBaseUrl, gmdFetch, isNetworkError, API, buildCoverUrl, UPSTREAM_AUTH_HINT } from './api.js'
 import { escapeHtml } from './util.js'
 import { parsePlaylists, renderPlaylistRow, openSongsView } from './playlists.js'
 
@@ -58,7 +58,7 @@ export async function loadDiscoverRecommend() {
       const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
       const res = await fetchText('/recommend', params)
       if (res.status === 401) {
-        empty(listEl, 'go-music-dl 启用了登录鉴权，请改用无需鉴权的地址')
+        empty(listEl, UPSTREAM_AUTH_HINT)
         return
       }
       if (!res.ok) {
@@ -415,7 +415,7 @@ function renderToplistsBySource() {
 function renderToplistRow(t) {
   const card = document.createElement('div')
   card.className = 'playlist-card'
-  const cover = buildCoverProxy(t.cover) || FALLBACK_COVER
+  const cover = buildCoverUrl(t.cover) || FALLBACK_COVER
   card.innerHTML = `
     <div class="playlist-cover">
       <img src="${escapeHtml(cover)}" loading="lazy" referrerpolicy="no-referrer">
@@ -429,14 +429,7 @@ function renderToplistRow(t) {
   return card
 }
 
-function buildCoverProxy(raw) {
-  if (!raw) return ''
-  const b = base()
-  if (!b) return raw
-  if (/^(data:|blob:)/i.test(raw)) return raw
-  if (raw.startsWith(b)) return raw
-  return `${b}/cover_proxy?url=${encodeURIComponent(raw)}`
-}
+
 
 async function openToplist(t) {
   const gridEl = document.getElementById('toplistList')
@@ -448,7 +441,6 @@ async function openToplist(t) {
       empty(gridEl, '该榜单暂无歌曲')
       return
     }
-    store.discoverToplistsSongs = songs
     await openSongsView(`${sourceLabel(t.source) || t.source} · ${t.name}`, songs)
   } catch (e) {
     empty(gridEl, isNetworkError(e) ? '无法连接服务' : escapeHtml(e.message || '加载失败'))

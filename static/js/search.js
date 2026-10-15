@@ -9,6 +9,7 @@ import {
   gmdFetch,
   isNetworkError,
   friendlyError,
+  UPSTREAM_AUTH_HINT,
 } from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
 import { parsePlaylists, renderPlaylistRow } from './playlists.js'
@@ -86,8 +87,6 @@ function renderSearchPagination(p, type) {
     hideSearchPagination()
     return
   }
-  store.searchPage = p.page
-  store.searchTotalPages = p.totalPages
   const noun = type === 'album' ? '张专辑' : type === 'playlist' ? '个歌单' : '首歌曲'
   summary.innerHTML =
     `找到 <span class="count">${p.total}</span> ${noun}` +
@@ -137,18 +136,24 @@ export async function loadRecommend() {
   if (catsEl) catsEl.innerHTML = ''
   try {
     const sources = (store.config.sources && store.config.sources.length) ? store.config.sources : ALL_SOURCES
-    const url = `${base}/recommend?sources=${sources.map(encodeURIComponent).join('&sources=')}`
-    const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-    if (res.status === 401) {
-      listEl.innerHTML = '<div class="empty-state">go-music-dl 启用了登录鉴权，请改用无需鉴权的地址</div>'
-      return
+    let playlists
+    if (store.config.backendType === 'api') {
+      // go-music-api 模式：走插件后端 JSON 转发（/api/v1/playlist/recommend）
+      const r = await API.backendRecommend(sources)
+      playlists = Array.isArray(r.items) ? r.items : []
+    } else {
+      const url = `${base}/recommend?sources=${sources.map(encodeURIComponent).join('&sources=')}`
+      const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+      if (res.status === 401) {
+        listEl.innerHTML = `<div class="empty-state">${UPSTREAM_AUTH_HINT}</div>`
+        return
+      }
+      if (!res.ok) {
+        listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
+        return
+      }
+      playlists = parsePlaylists(await res.text())
     }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="empty-state">加载失败: HTTP ${res.status}</div>`
-      return
-    }
-    const html = await res.text()
-    const playlists = parsePlaylists(html)
     if (!playlists.length) {
       listEl.innerHTML = '<div class="empty-state">暂无推荐歌单（部分平台需先在网页端登录）。</div>'
       return
