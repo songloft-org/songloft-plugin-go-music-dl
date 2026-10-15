@@ -109,7 +109,8 @@ export async function hostPluginFetch(path, opts = {}) {
   return j
 }
 
-// 把音源原始封面 CDN 地址转成 go-music-dl 的 /music/cover_proxy 代理地址，
+// 把音源原始封面 CDN 地址转成封面代理地址：
+// gmd → /music/cover_proxy；go-music-api → /api/v1/music/cover（同为图片代理）。
 // 规避网易云/QQ 等封面的防盗链 403 裂图（代理在中转时去掉了 Referer 限制）。
 // 幂等：已代理地址 / data: / blob: / 空值 直接返回原值，避免重复代理。
 export function buildCoverUrl(raw) {
@@ -118,6 +119,9 @@ export function buildCoverUrl(raw) {
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) return raw
   if (raw.startsWith(base)) return raw // 已是本实例代理地址
+  if (store.config.backendType === 'api') {
+    return `${base}/api/v1/music/cover?url=${encodeURIComponent(raw)}`
+  }
   return `${base}/cover_proxy?url=${encodeURIComponent(raw)}`
 }
 
@@ -197,6 +201,18 @@ export const API = {
     ),
   // ---------- 下载记录（已下载标记） ----------
   downloadRecords: () => fetchAuth('./downloads/records'),
+  // ---------- go-music-api 模式发现页/我的歌单 JSON 转发 ----------
+  backendRecommend: (sources) =>
+    fetchAuth('./backend/recommend' + (sources && sources.length ? '?sources=' + sources.map(encodeURIComponent).join(',') : '')),
+  backendCategories: (sources) =>
+    fetchAuth('./backend/categories' + (sources && sources.length ? '?sources=' + sources.map(encodeURIComponent).join(',') : '')),
+  backendCategoryPlaylists: (source, categoryId, page = 1) =>
+    fetchAuth(`./backend/category_playlists?source=${encodeURIComponent(source)}&categoryId=${encodeURIComponent(categoryId)}&page=${page}`),
+  backendUserPlaylists: (sources) =>
+    fetchAuth('./backend/user_playlists' + (sources && sources.length ? '?sources=' + sources.map(encodeURIComponent).join(',') : '')),
+  // 歌单/专辑详情（api 模式 JSON 全量）
+  backendCollectionSongs: (kind, id, source) =>
+    fetchAuth(`./backend/collection_songs?kind=${kind}&id=${encodeURIComponent(id)}&source=${encodeURIComponent(source)}`),
 }
 
 // 宿主歌单 API：经插件后端代理（/playlists...）调用，避免 common.js 的

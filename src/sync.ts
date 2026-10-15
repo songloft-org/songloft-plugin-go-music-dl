@@ -15,9 +15,10 @@
 //    （前端另带 X-Plugin-Timeout-Ms 放宽头兜底），从根上规避 504。
 
 import type { GoMusicDlConfig } from './config'
-import { getConfig } from './config'
+import { getConfig, isApiBackend } from './config'
 import {
   fetchCollectionSongsPage,
+  fetchCollectionSongsApi,
   buildCoverProxyUrl,
   parseSongCards,
   parsePagination,
@@ -186,6 +187,22 @@ async function upsertBinding(binding: SyncBinding): Promise<void> {
 async function fetchNextPage(s: SyncSession): Promise<boolean> {
   if (s.fetchDone) return false
   if (s.page > MAX_PAGES) {
+    s.fetchDone = true
+    return false
+  }
+  // go-music-api 模式：详情接口 JSON 全量返回（无分页），首页一次抓全后即完成
+  if (isApiBackend(s.config)) {
+    if (s.page > 1) {
+      s.fetchDone = true
+      return false
+    }
+    const songs = await fetchCollectionSongsApi(s.config, s.pl)
+    s.page = 1
+    if (!songs.length) {
+      throw new Error('歌单为空或读取失败（go-music-api）')
+    }
+    s.remote.push(...songs)
+    s.totalPages = 1
     s.fetchDone = true
     return false
   }

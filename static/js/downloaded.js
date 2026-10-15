@@ -1,6 +1,7 @@
 // downloaded.js — 「已在服务器下载」标记：拉 go-music-dl 下载记录构建匹配键集合，
 // 供歌曲列表行内显示徽标（downloaded mark）。记录是增强信息：拉取失败静默降级
 // （无徽标），缓存 10min，插件重载后自然重建。
+import { store } from './state.js'
 import { API } from './api.js'
 
 const TTL_MS = 10 * 60 * 1000
@@ -18,8 +19,10 @@ export function isDownloaded(song) {
   return !!marks[keyOf(song && song.name, song && song.artist)]
 }
 
-/** 确保记录已拉取（并发调用共享同一次请求）；失败返回 false 不抛出 */
+/** 确保记录已拉取（并发调用共享同一次请求）；失败返回 false 不抛出。
+ *  go-music-api 后端无下载记录端点：该模式下恒返回 false（无徽标）。 */
 export async function ensureDownloaded() {
+  if (store.config.backendType === 'api') return false
   if (marks && Date.now() - fetchedAt < TTL_MS) return true
   if (pending) return pending
   pending = (async () => {

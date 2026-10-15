@@ -27,6 +27,8 @@ export async function loadConfig() {
   const dq = document.getElementById('configDefaultQuality')
   if (dq) dq.value = store.config.defaultQuality || 'exhigh'
   store.currentQuality = store.config.defaultQuality || 'exhigh'
+  const btEl = document.getElementById('configBackendType')
+  if (btEl) btEl.value = store.config.backendType || 'gmd'
   const guEl = document.getElementById('configGmdAuthUser')
   if (guEl) guEl.value = store.config.gmdAuthUser || ''
   const gpEl = document.getElementById('configGmdAuthPass')
@@ -84,13 +86,15 @@ export async function saveConfig() {
   ).map((cb) => cb.value)
   const defaultQuality =
     document.getElementById('configDefaultQuality').value || 'exhigh'
+  const backendType =
+    document.getElementById('configBackendType')?.value || 'gmd'
   // gmd 管理员凭据（可选，账号登录分组）
   const gmdAuthUser = (
     document.getElementById('configGmdAuthUser')?.value || ''
   ).trim()
   const gmdAuthPass =
     document.getElementById('configGmdAuthPass')?.value || ''
-  store.config = { ...store.config, baseUrl, basePath, externalBaseUrl, serverHost, sources, defaultQuality, gmdAuthUser, gmdAuthPass }
+  store.config = { ...store.config, baseUrl, basePath, externalBaseUrl, serverHost, sources, defaultQuality, backendType, gmdAuthUser, gmdAuthPass }
   store.config.internalBaseUrl = baseUrl
   // 保存后立即按当前访问网络重选生效地址
   store.config.baseUrl = isExternalAccess() && externalBaseUrl ? externalBaseUrl : baseUrl
@@ -106,6 +110,7 @@ export async function saveConfig() {
       serverHost,
       sources,
       defaultQuality,
+      backendType,
       gmdAuthUser,
       gmdAuthPass,
     })

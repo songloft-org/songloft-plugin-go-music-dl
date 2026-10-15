@@ -345,6 +345,12 @@
                             <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">内网 / 默认</div>
                             <input type="text" class="text-field" id="configBaseUrl" placeholder="http://192.168.1.190:8080">
                             <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（挂载路径默认 /music，改过请到「网络进阶」填写 Base Path）</div>
+                            <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">后端类型</div>
+                            <select class="select-field" id="configBackendType">
+                                <option value="gmd">go-music-dl（推荐，功能最全）</option>
+                                <option value="api">go-music-api（纯 JSON 接口）</option>
+                            </select>
+                            <div class="card-desc" style="padding:0;margin-top:4px;">两个后端共用同一套音乐能力库。go-music-api 无排行榜/下载记录，其余功能一致；切换后建议点「测试连接」确认可达。</div>
                             <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
                             <div class="conn-row">
                                 <button class="btn-text" id="testConnBtn" type="button">测试连接</button>

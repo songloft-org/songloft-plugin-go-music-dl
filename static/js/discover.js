@@ -49,17 +49,24 @@ export async function loadDiscoverRecommend() {
   empty(listEl, '加载中…')
   if (catsEl) catsEl.innerHTML = ''
   try {
-    const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
-    const res = await fetchText('/recommend', params)
-    if (res.status === 401) {
-      empty(listEl, 'go-music-dl 启用了登录鉴权，请改用无需鉴权的地址')
-      return
+    let playlists
+    if (store.config.backendType === 'api') {
+      // go-music-api 模式：走插件后端 JSON 转发（/api/v1/playlist/recommend）
+      const r = await API.backendRecommend(activeSources())
+      playlists = Array.isArray(r.items) ? r.items : []
+    } else {
+      const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
+      const res = await fetchText('/recommend', params)
+      if (res.status === 401) {
+        empty(listEl, 'go-music-dl 启用了登录鉴权，请改用无需鉴权的地址')
+        return
+      }
+      if (!res.ok) {
+        empty(listEl, `加载失败: HTTP ${res.status}`)
+        return
+      }
+      playlists = parsePlaylists(await res.text())
     }
-    if (!res.ok) {
-      empty(listEl, `加载失败: HTTP ${res.status}`)
-      return
-    }
-    const playlists = parsePlaylists(await res.text())
     if (!playlists.length) {
       empty(listEl, '暂无推荐歌单（可能该音源不支持，或未登录）')
       return
@@ -143,13 +150,19 @@ export async function loadDiscoverCategories() {
   empty(chipsEl, '加载中…')
   if (gridEl) gridEl.innerHTML = '<div class="empty-state">选择上方分类查看歌单</div>'
   try {
-    const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
-    const res = await fetchText('/playlist_categories', params)
-    if (!res.ok) {
-      empty(chipsEl, `加载失败: HTTP ${res.status}`)
-      return
+    if (store.config.backendType === 'api') {
+      // go-music-api 模式：后端把 PlaylistCategory.group 归一为前端分组结构
+      const r = await API.backendCategories(activeSources())
+      catData = { sources: Array.isArray(r.sources) ? r.sources : [] }
+    } else {
+      const params = 'sources=' + activeSources().map(encodeURIComponent).join('&sources=')
+      const res = await fetchText('/playlist_categories', params)
+      if (!res.ok) {
+        empty(chipsEl, `加载失败: HTTP ${res.status}`)
+        return
+      }
+      catData = parseCategories(await res.text())
     }
-    catData = parseCategories(await res.text())
     if (!catData || !catData.sources.length) {
       empty(chipsEl, '暂无可用歌单分类（可能该音源不支持分类）')
       return
@@ -253,7 +266,24 @@ async function openCategory(cat) {
   if (!b || !gridEl) return
   gridEl.innerHTML = '<div class="empty-state">加载中…</div>'
   if (headerEl) headerEl.innerHTML = ''
+  const title = `${sourceLabel(cat.source) || cat.source} · ${cat.name}`
   try {
+    if (cat.categoryId !== undefined) {
+      // go-music-api 模式：分类元素带 categoryId，走后端 JSON 转发
+      const r = await API.backendCategoryPlaylists(cat.source, cat.categoryId)
+      const items = Array.isArray(r.items) ? r.items : []
+      if (headerEl) {
+        headerEl.innerHTML = `<div style="font-size:15px;font-weight:600;margin-bottom:4px;">${escapeHtml(title)}</div>` +
+          `<div class="page-summary" style="padding-top:0;">找到 ${items.length} 个歌单</div>`
+      }
+      if (!items.length) {
+        gridEl.innerHTML = '<div class="empty-state">该分类暂无歌单</div>'
+        return
+      }
+      gridEl.innerHTML = ''
+      items.forEach((pl) => gridEl.appendChild(renderPlaylistRow(pl)))
+      return
+    }
     const res = await gmdFetch(`${b}/category_playlists${cat.query}`, {
       headers: { 'X-Requested-With': 'XMLHttpRequest' },
     })
@@ -266,7 +296,6 @@ async function openCategory(cat) {
     // （对齐原生 playlist_grid.html 的 .list-header，避免只丢卡片而丢摘要）
     if (headerEl) {
       const h = parseCategoryHeader(html)
-      const title = `${sourceLabel(cat.source) || cat.source} · ${cat.name}`
       const lines = []
       if (h && h.countText)
         lines.push(`<div class="page-summary" style="padding-top:0;">${escapeHtml(h.countText)}</div>`)

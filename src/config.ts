@@ -25,6 +25,18 @@ export interface GoMusicDlConfig {
    *  gmd 未开启鉴权（家用默认）时留空即可，行为与以前完全一致。 */
   gmdAuthUser?: string
   gmdAuthPass?: string
+  /** 上游后端类型：'gmd' = go-music-dl（默认，HTML 页面 + JSON 混合），
+   *  'api' = go-music-api（纯 JSON REST）。决定插件调用哪套端点：
+   *  api 模式下搜索/详情/歌词走 /api/v1/*（无榜单/下载记录，相关功能降级）。 */
+  backendType?: string
+}
+
+/** 上游后端类型合法值（对齐设置页「服务连接」下拉） */
+export const BACKEND_TYPES = ['gmd', 'api'] as const
+export type BackendType = (typeof BACKEND_TYPES)[number]
+
+export function isApiBackend(config: GoMusicDlConfig): boolean {
+  return config.backendType === 'api'
 }
 
 /** 合法音质档位（对齐前端设置页下拉选项 static/index.html #configDefaultQuality） */
@@ -120,6 +132,12 @@ export function normalizeConfig(raw: Partial<GoMusicDlConfig>): GoMusicDlConfig 
     typeof parsed.gmdAuthUser === 'string' ? parsed.gmdAuthUser.trim() : ''
   parsed.gmdAuthPass =
     typeof parsed.gmdAuthPass === 'string' ? parsed.gmdAuthPass : ''
+  // 后端类型：白名单收口，非法回退 gmd（兼容旧数据缺失字段）
+  parsed.backendType = (BACKEND_TYPES as readonly string[]).includes(
+    String(parsed.backendType || ''),
+  )
+    ? String(parsed.backendType)
+    : 'gmd'
   // 默认音质：白名单收口，非法/缺失回退默认（与前端下拉一致，避免任意值流入上游 extra.level）
   parsed.defaultQuality = (QUALITY_LEVELS as readonly string[]).includes(
     String(parsed.defaultQuality || ''),

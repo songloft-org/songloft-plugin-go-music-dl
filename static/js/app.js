@@ -173,6 +173,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // 恢复为暂停态：迷你条显示上次歌曲与进度，点播放续播，不自动出声
   loadConfig()
     .then(() => {
+      // go-music-api 后端无榜单能力：隐藏发现页「排行榜」子入口（gmd 模式不受影响）
+      if (store.config.backendType === 'api') {
+        const tlBtn = document.querySelector('#discoverSubSwitch [data-sub=toplists]')
+        if (tlBtn) tlBtn.style.display = 'none'
+      }
       restoreLastPlayback()
       showBrowserHome()
     })

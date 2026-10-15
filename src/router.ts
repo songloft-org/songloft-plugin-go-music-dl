@@ -5,7 +5,7 @@ import {
   parseQuery,
 } from '@songloft/plugin-sdk'
 import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
-import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources, applyDefaultQuality } from './config'
+import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources, applyDefaultQuality, isApiBackend } from './config'
 import {
   searchSongs,
   searchSongsPage,
@@ -17,6 +17,11 @@ import {
   fetchTopLists,
   fetchTopListSongs,
   fetchDownloadRecords,
+  fetchRecommendApi,
+  fetchCategoriesApi,
+  fetchCategoryPlaylistsApi,
+  fetchUserPlaylistsApi,
+  fetchCollectionSongsApi,
   GoSong,
   GoTopList,
 } from './client'
@@ -910,9 +915,12 @@ router.get('/qr/poll', async (req: HTTPRequest) => {
 // ---------- 排行榜（go-music-dl /toplists、/toplist_songs，仅 dl 后端有） ----------
 
 // 榜单目录：GET /toplists?sources=netease,qq,...（缺省用插件配置音源）。
-// 榜单目录变化慢，缓存 10min。
+// 榜单目录变化慢，缓存 10min。仅 go-music-dl 后端支持（api 模式返回明确错误，前端隐藏入口）。
 router.get('/toplists', async (req: HTTPRequest) => {
   const config = await getConfig()
+  if (isApiBackend(config)) {
+    return jsonResponse({ error: 'go-music-api 后端暂不支持排行榜' }, 400)
+  }
   const q = parseQuery(req.query)
   const sources = String(q.sources || '')
     .split(',')
@@ -977,6 +985,10 @@ router.get('/toplist_songs', async (req: HTTPRequest) => {
 // 返回归一化匹配键 → status 的映射（仅 success/skipped 计为已下载；failed 不算）。
 // 拉前 3 页（每页 100）覆盖近期记录，结果缓存 10min。
 router.get('/downloads/records', async () => {
+  const configNow = await getConfig()
+  if (isApiBackend(configNow)) {
+    return jsonResponse({ marks: {} })
+  }
   const cached = dlRecordsCache.get('all')
   if (cached) return jsonResponse({ marks: cached })
   const config = await getConfig()
@@ -994,6 +1006,101 @@ router.get('/downloads/records', async () => {
   } catch {
     // 下载记录是增强信息，失败静默降级（不给列表加徽标即可）
     return jsonResponse({ marks: {} })
+  }
+})
+
+// ---------- 发现页/我的歌单 JSON 转发（go-music-api 模式专用） ----------
+// gmd 模式下前端直连 gmd HTML（原有链路，零改动）；api 模式下前端改走这些端点，
+// 由后端调 api 的 JSON 接口并归一化为前端渲染函数期望的数据结构。
+
+function requireApiBackend(config: GoMusicDlConfig): string | null {
+  if (!config.baseUrl) return '服务地址未配置，请先在设置中填写'
+  if (!isApiBackend(config)) return '该端点仅在 go-music-api 后端模式下可用'
+  return null
+}
+
+function sourcesFromQuery(req: HTTPRequest): string[] {
+  const q = parseQuery(req.query)
+  return String(q.sources || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+// 每日推荐歌单（api: /api/v1/playlist/recommend 多源聚合）
+router.get('/backend/recommend', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const err = requireApiBackend(config)
+  if (err) return jsonResponse({ error: err }, 400)
+  try {
+    const items = await fetchRecommendApi(config, sourcesFromQuery(req))
+    return jsonResponse({ items })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 502)
+  }
+})
+
+// 歌单分类（api: /api/v1/playlist/categories，PlaylistCategory.group → 前端分组）
+router.get('/backend/categories', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const err = requireApiBackend(config)
+  if (err) return jsonResponse({ error: err }, 400)
+  try {
+    const sources = await fetchCategoriesApi(config, sourcesFromQuery(req))
+    return jsonResponse({ sources })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 502)
+  }
+})
+
+// 分类下歌单（api: /api/v1/playlist/category，支持分页）
+router.get('/backend/category_playlists', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const err = requireApiBackend(config)
+  if (err) return jsonResponse({ error: err }, 400)
+  const q = parseQuery(req.query)
+  const source = String(q.source || '')
+  const categoryId = String(q.categoryId || '')
+  const page = Math.max(1, parseInt(String(q.page || '1'), 10) || 1)
+  if (!source || !categoryId) {
+    return jsonResponse({ error: 'source and categoryId are required' }, 400)
+  }
+  try {
+    const items = await fetchCategoryPlaylistsApi(config, source, categoryId, page)
+    return jsonResponse({ items, page })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 502)
+  }
+})
+
+// 歌单/专辑详情（api: /api/v1/playlist/detail、/album/detail，JSON 全量）
+router.get('/backend/collection_songs', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const err = requireApiBackend(config)
+  if (err) return jsonResponse({ error: err }, 400)
+  const q = parseQuery(req.query)
+  const id = String(q.id || '')
+  const source = String(q.source || '')
+  const kind = q.kind === 'album' ? 'album' : 'playlist'
+  if (!id || !source) return jsonResponse({ error: 'id and source are required' }, 400)
+  try {
+    const items = await fetchCollectionSongsApi(config, { id, source }, kind)
+    return jsonResponse({ items })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 502)
+  }
+})
+
+// 我的歌单（api: 逐源 /api/v1/playlist/user 聚合，未登录源静默跳过）
+router.get('/backend/user_playlists', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const err = requireApiBackend(config)
+  if (err) return jsonResponse({ error: err }, 400)
+  try {
+    const items = await fetchUserPlaylistsApi(config, sourcesFromQuery(req))
+    return jsonResponse({ items })
+  } catch (e) {
+    return jsonResponse({ error: String((e as Error)?.message || e) }, 502)
   }
 })
 

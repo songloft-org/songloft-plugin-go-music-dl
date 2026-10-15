@@ -1,4 +1,4 @@
-import { GoMusicDlConfig, DEFAULT_SOURCES, normalizeBaseUrl } from './config'
+import { GoMusicDlConfig, DEFAULT_SOURCES, normalizeBaseUrl, isApiBackend } from './config'
 import { classifyLyricFormat, collapseKaraokeToLines } from './lyrics-format'
 
 export interface GoSong {
@@ -107,6 +107,104 @@ async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
 }
 
 export type SearchType = 'song' | 'playlist' | 'album'
+
+// ---------- go-music-api（纯 JSON REST）分流层 ----------
+// 上游 go-music-api 与 go-music-dl 共用 music-lib，能力一致但端点/返回形态不同：
+// api 是 {code,msg,data} 信封的纯 JSON（搜索全量返回、无分页参数），插件层内存切片
+// 对齐 gmd 的 WebPageSize（默认 200）翻页语义。取流端点两侧参数一致（songFromQuery）。
+
+/** api 模式搜索全量返回后的客户端分页大小（对齐 gmd core.DefaultWebPageSize） */
+export const API_PAGE_SIZE = 200
+
+/** GET {base}/api/v1{path}，解开 {code,msg,data} 信封；code!==200 抛可读错误 */
+async function fetchApiJson(
+  config: GoMusicDlConfig,
+  path: string,
+  timeoutMs = 25000,
+): Promise<any> {
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  const url = `${base}/api/v1${path}`
+  const text = await fetchText(url, timeoutMs)
+  let payload: any
+  try {
+    payload = JSON.parse(text)
+  } catch {
+    throw new Error('go-music-api 返回了非 JSON 响应，请确认后端类型配置正确')
+  }
+  if (!payload || (payload.code !== 200 && payload.code !== 0)) {
+    throw new Error((payload && payload.msg) || `go-music-api 请求失败 (code=${payload && payload.code})`)
+  }
+  return payload.data
+}
+
+/** api model.Song → 插件 GoSong（字段名一致，收口类型） */
+export function mapApiSong(s: any, fallbackSource: string): GoSong {
+  return {
+    id: String((s && s.id) ?? ''),
+    source: String((s && s.source) || fallbackSource || ''),
+    name: String((s && s.name) || ''),
+    artist: String((s && s.artist) || ''),
+    album: String((s && s.album) || ''),
+    cover: String((s && s.cover) || ''),
+    duration: Number(s && s.duration) || 0,
+    extra: (s && s.extra) || {},
+  }
+}
+
+/** api model.Playlist → 插件 GoCollection */
+export function mapApiPlaylist(p: any, fallbackSource: string): GoCollection {
+  return {
+    id: String((p && p.id) ?? ''),
+    source: String((p && p.source) || fallbackSource || ''),
+    title: String((p && p.name) || ''),
+    cover: String((p && p.cover) || ''),
+    creator: String((p && p.creator) || ''),
+    count: Number(p && p.track_count) || 0,
+    contentType: 'playlist',
+  }
+}
+
+function apiSourcesParam(config: GoMusicDlConfig): string {
+  const sources =
+    config.sources && config.sources.length ? config.sources : DEFAULT_SOURCES
+  return sources.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
+}
+
+/** api 模式综合搜索：type=song/playlist/album，返回全量（无分页参数） */
+async function apiSearchAll(
+  keyword: string,
+  config: GoMusicDlConfig,
+  type: SearchType,
+  timeoutMs: number,
+): Promise<{ songs: GoSong[]; collections: GoCollection[] }> {
+  const data = await fetchApiJson(
+    config,
+    `/music/search?q=${encodeURIComponent(keyword)}&type=${type}&${apiSourcesParam(config)}`,
+    timeoutMs,
+  )
+  const sourceOf = (item: any) => (item && item.source) || ''
+  if (type === 'song') {
+    const songs = (Array.isArray(data && data.songs) ? data.songs : []).map((s: any) =>
+      mapApiSong(s, sourceOf(s)),
+    )
+    return { songs, collections: [] }
+  }
+  const raw = Array.isArray(data && (type === 'playlist' ? data.playlists : data.albums))
+    ? data[type === 'playlist' ? 'playlists' : 'albums']
+    : []
+  const collections = raw.map((p: any) => ({
+    ...mapApiPlaylist(p, sourceOf(p)),
+    contentType: type === 'album' ? ('album' as const) : ('playlist' as const),
+  }))
+  return { songs: [], collections }
+}
+
+export function slicePage<T>(items: T[], page: number): { items: T[]; total: number; totalPages: number } {
+  const total = items.length
+  const totalPages = Math.max(1, Math.ceil(total / API_PAGE_SIZE))
+  const p = Math.min(Math.max(1, page), totalPages)
+  return { items: items.slice((p - 1) * API_PAGE_SIZE, p * API_PAGE_SIZE), total, totalPages }
+}
 
 /**
  * 构造并请求 go-music-dl 的 /music/search，返回原始 HTML。
@@ -231,6 +329,12 @@ export async function searchSongs(
   pageSize = 20,
   timeoutMs = 25000,
 ): Promise<GoSong[]> {
+  if (isApiBackend(config)) {
+    const { songs } = await apiSearchAll(keyword, config, 'song', timeoutMs)
+    const sorted = sortSongsByRelevance(songs, keyword)
+    // api 无分页参数：全量返回后内存切片（宿主 L2/回搜只取前 N 条，切片开销可忽略）
+    return sorted.slice((Math.max(1, page) - 1) * pageSize, Math.max(1, page) * pageSize)
+  }
   const html = await fetchSearchHtml(keyword, config, 'song', page, pageSize, timeoutMs)
   const items = parseSongCards(html)
   return sortSongsByRelevance(items, keyword)
@@ -281,6 +385,23 @@ export async function searchSongsPage(
   page = 1,
   timeoutMs = 25000,
 ): Promise<{ items: GoSong[]; pagination: Pagination }> {
+  if (isApiBackend(config)) {
+    const { songs } = await apiSearchAll(keyword, config, 'song', timeoutMs)
+    const sorted = sortSongsByRelevance(songs, keyword)
+    const { items, total, totalPages } = slicePage(sorted, page)
+    const pageStart = total === 0 ? 0 : (Math.min(Math.max(1, page), totalPages) - 1) * API_PAGE_SIZE + 1
+    return {
+      items,
+      pagination: {
+        page: Math.min(Math.max(1, page), totalPages),
+        totalPages,
+        total,
+        pageStart,
+        pageEnd: pageStart + items.length - 1,
+        inferred: true,
+      },
+    }
+  }
   const html = await fetchSearchHtml(keyword, config, 'song', page, 0, timeoutMs)
   const items = parseSongCards(html)
   const sortedItems = sortSongsByRelevance(items, keyword)
@@ -340,6 +461,10 @@ export async function searchCollections(
   pageSize = 50,
   timeoutMs = 25000,
 ): Promise<GoCollection[]> {
+  if (isApiBackend(config)) {
+    const { collections } = await apiSearchAll(keyword, config, type, timeoutMs)
+    return collections.slice((Math.max(1, page) - 1) * pageSize, Math.max(1, page) * pageSize)
+  }
   const html = await fetchSearchHtml(keyword, config, type, page, pageSize, timeoutMs)
   return parsePlaylistCards(html)
 }
@@ -355,6 +480,22 @@ export async function searchCollectionsPage(
   page = 1,
   timeoutMs = 25000,
 ): Promise<{ items: GoCollection[]; pagination: Pagination }> {
+  if (isApiBackend(config)) {
+    const { collections } = await apiSearchAll(keyword, config, type, timeoutMs)
+    const { items, total, totalPages } = slicePage(collections, page)
+    const pageStart = total === 0 ? 0 : (Math.min(Math.max(1, page), totalPages) - 1) * API_PAGE_SIZE + 1
+    return {
+      items,
+      pagination: {
+        page: Math.min(Math.max(1, page), totalPages),
+        totalPages,
+        total,
+        pageStart,
+        pageEnd: pageStart + items.length - 1,
+        inferred: true,
+      },
+    }
+  }
   const html = await fetchSearchHtml(keyword, config, type, page, 0, timeoutMs)
   const items = parsePlaylistCards(html)
   const pagination = parsePagination(html)
@@ -403,9 +544,23 @@ export function buildDownloadUrl(
  * 相比 download?stream=1（宿主 QuickJS fetch 会把整曲读进内存，上限 64MiB/首），
  * 用它做导入前探测的带宽与内存成本可忽略。
  */
-export function buildInspectUrl(song: GoSong, baseUrl: string, basePath?: string): string {
+export function buildInspectUrl(
+  song: GoSong,
+  baseUrl: string,
+  basePath?: string,
+  apiMode = false,
+): string {
   const base = normalizeBaseUrl(baseUrl, basePath)
   if (!base) return ''
+  if (apiMode) {
+    // api 模式 inspect 只收 id/source/duration（无 extra，码率估算能力一致）
+    return (
+      `${base}/api/v1/music/inspect` +
+      `?id=${encodeURIComponent(song.id)}` +
+      `&source=${encodeURIComponent(song.source)}` +
+      `&duration=${song.duration || 0}`
+    )
+  }
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   return (
     `${base}/inspect` +
@@ -426,6 +581,20 @@ export async function fetchLyricRaw(
   config: GoMusicDlConfig,
   timeoutMs = 25000,
 ): Promise<string> {
+  // api 模式：/api/v1/music/lyric 只收 id/source（无 extra、无 format 参数），
+  // 返回 {code,data:{lyric}}——部分平台（如 kugou 需 extra 指纹）可能取词失败，属后端能力差异。
+  if (isApiBackend(config)) {
+    try {
+      const data = await fetchApiJson(
+        config,
+        `/music/lyric?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(song.source)}`,
+        timeoutMs,
+      )
+      return String((data && data.lyric) || '')
+    } catch {
+      return ''
+    }
+  }
   const base = normalizeBaseUrl(config.baseUrl, config.basePath)
   const extra = encodeURIComponent(JSON.stringify(song.extra || {}))
   const url =
@@ -490,6 +659,7 @@ export async function fetchUserPlaylistsHtml(
 /**
  * 分页拉取歌单/专辑详情页（HTML）。卡片与搜索结果同为 .song-card 结构
  * （go-music-dl 共用 partials/song_list.html 模板），用 parseSongCards 解析。
+ * api 模式返回 null（调用方改走 fetchCollectionSongsApi）。
  */
 export async function fetchCollectionSongsPage(
   config: GoMusicDlConfig,
@@ -507,6 +677,25 @@ export async function fetchCollectionSongsPage(
 }
 
 /**
+ * api 模式歌单/专辑详情：JSON 全量返回（无分页），由调用方自行切片。
+ * kind: 'playlist'（默认）| 'album'。
+ */
+export async function fetchCollectionSongsApi(
+  config: GoMusicDlConfig,
+  collection: { id: string; source: string },
+  kind: 'playlist' | 'album' = 'playlist',
+  timeoutMs = 25000,
+): Promise<GoSong[]> {
+  const path =
+    kind === 'album'
+      ? `/album/detail?id=${encodeURIComponent(collection.id)}&source=${encodeURIComponent(collection.source)}`
+      : `/playlist/detail?id=${encodeURIComponent(collection.id)}&source=${encodeURIComponent(collection.source)}`
+  const data = await fetchApiJson(config, path, timeoutMs)
+  const raw = Array.isArray(data) ? data : Array.isArray(data && data.songs) ? data.songs : []
+  return raw.map((s: any) => mapApiSong(s, collection.source))
+}
+
+/**
  * 把音源原始封面 CDN 地址转成 go-music-dl /music/cover_proxy 代理地址，
  * 规避网易云/QQ 等封面的防盗链 403。与前端 api.js buildCoverUrl 同实现
  * （QuickJS/WebView 无法共享模块，两处需同步），宿主 GetPlaylistCover 仅在
@@ -516,13 +705,17 @@ export function buildCoverProxyUrl(
   rawCover: string,
   baseUrl: string,
   basePath?: string,
+  apiMode = false,
 ): string {
   if (!rawCover) return ''
   if (/^(data:|blob:)/i.test(rawCover)) return rawCover
   const base = normalizeBaseUrl(baseUrl, basePath)
   if (!base) return rawCover
   if (rawCover.startsWith(base)) return rawCover // 已是本实例代理地址
-  return `${base}/cover_proxy?url=${encodeURIComponent(rawCover)}`
+  // api 模式无 /cover_proxy，走 /api/v1/music/cover（同为图片代理）
+  return apiMode
+    ? `${base}/api/v1/music/cover?url=${encodeURIComponent(rawCover)}`
+    : `${base}/cover_proxy?url=${encodeURIComponent(rawCover)}`
 }
 
 // ---------- 排行榜（go-music-dl /music/toplists、/music/toplist_songs，仅 dl 有） ----------
@@ -656,5 +849,136 @@ export async function fetchDownloadRecords(
 async function requestJsonAny(url: string, timeoutMs: number): Promise<any> {
   const text = await fetchText(url, timeoutMs)
   return JSON.parse(text)
+}
+
+/**
+ * api 模式我的歌单：api 是单源端点（/api/v1/playlist/user?source&page&limit），
+ * 逐源并发抓取后聚合；401（未配置该平台 Cookie）的源静默跳过。
+ * 返回与前端 parsePlaylists 相同字段结构的歌单数组。
+ */
+export async function fetchUserPlaylistsApi(
+  config: GoMusicDlConfig,
+  sources?: string[],
+  timeoutMs = 15000,
+): Promise<GoCollection[]> {
+  const list =
+    sources && sources.length
+      ? sources
+      : config.sources && config.sources.length
+        ? config.sources
+        : DEFAULT_SOURCES
+  const supported = list.filter((s) =>
+    ['netease', 'qq', 'kugou'].includes(s),
+  )
+  const results = await Promise.all(
+    supported.map(async (source) => {
+      try {
+        const data = await fetchApiJson(
+          config,
+          `/playlist/user?source=${encodeURIComponent(source)}&page=1&limit=50`,
+          timeoutMs,
+        )
+        const raw = Array.isArray(data && data.playlists) ? data.playlists : []
+        return raw.map((p: any) => mapApiPlaylist(p, source))
+      } catch {
+        return [] // 未登录（401）/不支持：该源跳过
+      }
+    }),
+  )
+  return results.flat()
+}
+
+/** api 模式每日推荐歌单（多源聚合，data 为 Playlist[]） */
+export async function fetchRecommendApi(
+  config: GoMusicDlConfig,
+  sources?: string[],
+  timeoutMs = 20000,
+): Promise<GoCollection[]> {
+  const list =
+    sources && sources.length
+      ? sources
+      : config.sources && config.sources.length
+        ? config.sources
+        : DEFAULT_SOURCES
+  const data = await fetchApiJson(
+    config,
+    `/playlist/recommend?${list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')}`,
+    timeoutMs,
+  )
+  const raw = Array.isArray(data) ? data : []
+  return raw.map((p: any) => mapApiPlaylist(p, (p && p.source) || ''))
+}
+
+export interface ApiCategorySource {
+  source: string
+  name: string
+  /** 归一化为前端 parseCategories 的分组结构（api 的 PlaylistCategory 自带 group 字段） */
+  groups: { name: string; categories: { name: string; source: string; categoryId: string }[] }[]
+}
+
+/** api 模式歌单分类：{source,name,categories:[{id,name,group}]} → 前端分组结构 */
+export async function fetchCategoriesApi(
+  config: GoMusicDlConfig,
+  sources?: string[],
+  timeoutMs = 20000,
+): Promise<ApiCategorySource[]> {
+  const list =
+    sources && sources.length
+      ? sources
+      : config.sources && config.sources.length
+        ? config.sources
+        : DEFAULT_SOURCES
+  const data = await fetchApiJson(
+    config,
+    `/playlist/categories?${list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')}`,
+    timeoutMs,
+  )
+  const raw = Array.isArray(data) ? data : []
+  const out: ApiCategorySource[] = []
+  for (const item of raw) {
+    if (!item || item.error || !Array.isArray(item.categories)) continue
+    const groups: ApiCategorySource['groups'] = []
+    const byGroup = new Map<string, { name: string; categories: { name: string; source: string; categoryId: string }[] }>()
+    for (const c of item.categories) {
+      if (!c || !c.id || !c.name) continue
+      const gname = String(c.group || '推荐')
+      if (!byGroup.has(gname)) {
+        const g = { name: gname, categories: [] }
+        byGroup.set(gname, g)
+        groups.push(g)
+      }
+      byGroup.get(gname)!.categories.push({
+        name: String(c.name),
+        source: String(item.source || ''),
+        categoryId: String(c.id),
+      })
+    }
+    if (groups.length) {
+      out.push({
+        source: String(item.source || ''),
+        name: String(item.name || item.source || ''),
+        groups,
+      })
+    }
+  }
+  return out
+}
+
+/** api 模式分类下歌单（分页） */
+export async function fetchCategoryPlaylistsApi(
+  config: GoMusicDlConfig,
+  source: string,
+  categoryId: string,
+  page = 1,
+  limit = 30,
+  timeoutMs = 20000,
+): Promise<GoCollection[]> {
+  const data = await fetchApiJson(
+    config,
+    `/playlist/category?source=${encodeURIComponent(source)}&category_id=${encodeURIComponent(categoryId)}&page=${page}&limit=${limit}`,
+    timeoutMs,
+  )
+  const raw = Array.isArray(data && data.playlists) ? data.playlists : []
+  return raw.map((p: any) => mapApiPlaylist(p, source))
 }
 

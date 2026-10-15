@@ -16,6 +16,7 @@ import {
 } from './api.js'
 import { renderSong, scheduleInspect } from './songlist.js'
 import { importCollectionAsPlaylist } from './imports.js'
+import { API } from './api.js'
 
 // 解析 /music/user_playlists 返回的 HTML：
 // 优先读卡片内「导入本地」按钮的 data-external-id / data-source（显式属性，无 & 转义问题）；
@@ -242,6 +243,23 @@ export async function loadUserPlaylists() {
   listEl.innerHTML = '<div class="empty-state">加载中…</div>'
   try {
     const sources = (store.config.sources && store.config.sources.length) ? store.config.sources : ALL_SOURCES
+    // go-music-api 模式：走插件后端逐源聚合 JSON（未登录源自动跳过）
+    if (store.config.backendType === 'api') {
+      const r = await API.backendUserPlaylists(sources)
+      const playlists = Array.isArray(r.items) ? r.items : []
+      if (!playlists.length) {
+        listEl.innerHTML = '<div class="empty-state">未获取到歌单：请先在上方「平台扫码登录」完成登录（未登录的平台会被跳过）</div>'
+        return
+      }
+      listEl.innerHTML = ''
+      playlists.forEach((pl) => listEl.appendChild(renderPlaylistRow(pl)))
+      store.allPlaylists = playlists
+      store.currentCat = 'all'
+      buildPlaylistCats()
+      renderPlaylistsByCat()
+      store.myListLoaded = true
+      return
+    }
     const url = `${base}/user_playlists?sources=${sources.map(encodeURIComponent).join('&sources=')}`
     const res = await gmdFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
     if (res.status === 401) {
@@ -306,6 +324,24 @@ export async function openCollection(pl, endpoint, showImport, page = 1) {
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) {
     listEl.innerHTML = '<div class="empty-state">未配置服务地址</div>'
+    return
+  }
+  // go-music-api 模式：详情走插件后端 JSON（全量返回，无分页）
+  if (store.config.backendType === 'api') {
+    try {
+      const r = await API.backendCollectionSongs(endpoint === 'album' ? 'album' : 'playlist', pl.id, pl.source)
+      const songs = Array.isArray(r.items) ? r.items : []
+      if (!songs.length) {
+        listEl.innerHTML = `<div class="empty-state">该${endpoint === 'album' ? '专辑' : '歌单'}暂无歌曲</div>`
+        return
+      }
+      store.queue = songs
+      listEl.innerHTML = ''
+      songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport })))
+      scheduleInspect(listEl)
+    } catch (e) {
+      listEl.innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(e.message)}</div>`
+    }
     return
   }
   try {

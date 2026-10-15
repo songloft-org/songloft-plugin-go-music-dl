@@ -3,6 +3,7 @@
 // 平移时逻辑保持不变。
 
 import type { GoMusicDlConfig } from './config'
+import { isApiBackend } from './config'
 import { buildInspectUrl } from './client'
 
 export interface SongItem {
@@ -65,6 +66,7 @@ export async function probeDownloadable(
     },
     config.baseUrl,
     config.basePath,
+    isApiBackend(config),
   )
   if (!url) return 'dead' // baseUrl 为空：与旧口径一致按不可用处理（/import/batch 另有显式 400）
   // 超时兜底：X-Fetch-Timeout-Ms=6000（inspect 上游自带 5s client 超时，6s 是余量）

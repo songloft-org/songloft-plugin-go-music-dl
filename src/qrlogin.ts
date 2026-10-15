@@ -10,7 +10,7 @@
 // 支持源（core/service.go GetQRLoginCreateFunc）：netease/qq/qq_wx/kugou/bilibili/soda；
 // soda 走短信验证分支（上游 Web 端也临时隐藏入口），本插件不接入。
 
-import { normalizeBaseUrl, GoMusicDlConfig } from './config'
+import { normalizeBaseUrl, GoMusicDlConfig, isApiBackend } from './config'
 import { getGmdCookieHeader, clearCachedSession } from './gmd-auth'
 
 export interface QRSourceInfo {
@@ -87,6 +87,37 @@ async function requestJson(
 /** 401（gmd 鉴权失败）专用错误：调用方据此触发「重登一次」重试 */
 export class GmdAuthError extends Error {}
 
+/** api 模式轻量 JSON 请求：不解信封（由调用方处理 data），HTTP 错误抛 msg */
+async function requestJsonRaw(
+  url: string,
+  method: 'GET' | 'POST',
+  timeoutMs: number,
+): Promise<any> {
+  let res: any
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-Fetch-Timeout-Ms': String(Math.min(30000, Math.max(100, timeoutMs))),
+      },
+    })
+  } catch (e: any) {
+    throw new Error('无法连接 go-music-api: ' + (e?.message || String(e)))
+  }
+  const text = await res.text()
+  let payload: any = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    /* 非 JSON */
+  }
+  if (!res.ok) {
+    throw new Error((payload && payload.msg) || `go-music-api 请求失败: HTTP ${res.status}`)
+  }
+  return payload
+}
+
 /** 带鉴权的请求：有凭据时自动登录/复用 session，401 时强制重登一次再试 */
 async function requestJsonWithAuth(
   url: string,
@@ -111,19 +142,30 @@ function qrBase(config: { baseUrl: string; basePath?: string }): string {
   return normalizeBaseUrl(config.baseUrl, config.basePath)
 }
 
-/** 创建扫码会话（转发 gmd POST /qr_login/:source，开启鉴权的实例自动带 session） */
+/** 创建扫码会话（gmd: POST /qr_login/:source；api: POST /api/v1/system/qr_login/:source 信封 data） */
 export async function qrStart(
   source: string,
   config: GoMusicDlConfig,
   timeoutMs = 15000,
 ): Promise<QRSession> {
   const base = qrBase(config)
-  const data = await requestJsonWithAuth(
-    `${base}/qr_login/${encodeURIComponent(source)}`,
-    'POST',
-    timeoutMs,
-    config,
-  )
+  let data: any
+  if (isApiBackend(config)) {
+    // go-music-api 无登录鉴权，端点在 /api/v1/system 下，返回 {code,msg,data:session}
+    const text = await requestJsonRaw(
+      `${base}/api/v1/system/qr_login/${encodeURIComponent(source)}`,
+      'POST',
+      timeoutMs,
+    )
+    data = text && typeof text === 'object' && 'data' in text ? text.data : text
+  } else {
+    data = await requestJsonWithAuth(
+      `${base}/qr_login/${encodeURIComponent(source)}`,
+      'POST',
+      timeoutMs,
+      config,
+    )
+  }
   if (!data || !data.key) {
     throw new Error((data && data.error) || '二维码创建失败：上游未返回会话 key')
   }
@@ -136,7 +178,7 @@ export async function qrStart(
   }
 }
 
-/** 轮询扫码状态（转发 gmd GET /qr_login/:source?key=）。轮询频繁，超时给短（8s）。 */
+/** 轮询扫码状态。轮询频繁，超时给短（8s）。 */
 export async function qrPoll(
   source: string,
   key: string,
@@ -144,12 +186,22 @@ export async function qrPoll(
   timeoutMs = 8000,
 ): Promise<QRResult> {
   const base = qrBase(config)
-  const data = await requestJsonWithAuth(
-    `${base}/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`,
-    'GET',
-    timeoutMs,
-    config,
-  )
+  let data: any
+  if (isApiBackend(config)) {
+    const text = await requestJsonRaw(
+      `${base}/api/v1/system/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`,
+      'GET',
+      timeoutMs,
+    )
+    data = text && typeof text === 'object' && 'data' in text ? text.data : text
+  } else {
+    data = await requestJsonWithAuth(
+      `${base}/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`,
+      'GET',
+      timeoutMs,
+      config,
+    )
+  }
   return {
     status: String((data && data.status) || 'failed'),
     message: data && data.message ? String(data.message) : undefined,
