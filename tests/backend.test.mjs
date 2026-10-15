@@ -5,6 +5,7 @@ import {
   parseSongCards,
   parsePagination,
   parsePlaylistCards,
+  parseTopListCards,
   buildDownloadUrl,
   buildInspectUrl,
   sortSongsByRelevance,
@@ -91,4 +92,25 @@ test('encodeToken/decodeToken 往返（对象含中文与特殊字符）', () =>
   const tok = encodeToken(song)
   assert.ok(!/[+/=]/.test(tok), 'token 为 URL 安全的 base64url')
   assert.deepEqual(decodeToken(tok), song)
+})
+
+test('parseTopListCards：从榜单卡片 href query 提取字段并去重', () => {
+  const card = (q) => `<a class="toplist-card" href="/music/toplist_songs?${q}"></a>`
+  const html = [
+    card('source=netease&amp;toplist_id=19723756&amp;toplist_name=%E9%A3%99%E5%8D%87%E6%A6%9C&amp;update_frequency=%E6%AF%8F%E6%97%A5%E6%9B%B4%E6%96%B0&amp;cover=http%3A%2F%2Fx%2F1.jpg&amp;track_count=100'),
+    card('source=netease&amp;toplist_id=19723756&amp;toplist_name=%E9%A3%99%E5%8D%87%E6%A6%9C'),
+    card('source=qq&amp;toplist_id=26&amp;toplist_name=%E5%B3%B0%E5%B3%B0%E6%A6%9C'),
+    card('source=qq&amp;toplist_id='),
+  ].join('\n')
+  const lists = parseTopListCards(html)
+  // 同 source+id 去重、缺 toplist_id 跳过
+  assert.equal(lists.length, 2)
+  assert.equal(lists[0].source, 'netease')
+  assert.equal(lists[0].toplistId, '19723756')
+  assert.equal(lists[0].name, '飙升榜')
+  assert.equal(lists[0].updateFrequency, '每日更新')
+  assert.equal(lists[0].cover, 'http://x/1.jpg')
+  assert.equal(lists[0].trackCount, 100)
+  assert.equal(lists[1].source, 'qq')
+  assert.equal(lists[1].toplistId, '26')
 })

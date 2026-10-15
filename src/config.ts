@@ -20,6 +20,11 @@ export interface GoMusicDlConfig {
    *  仅网易云消费（写入 extra.level，上游据此取链），其他音源忽略。
    *  前端设置页保存时即携带该字段，后端归一化收口并在取流/搜索出口统一注入。 */
   defaultQuality?: string
+  /** go-music-dl Web 管理员账号（可选）：仅当 gmd 实例开启了登录鉴权时需要填写，
+   *  用于扫码登录等系统配置端点（qr_login/cookies）的自动登录（session 插件侧缓存）。
+   *  gmd 未开启鉴权（家用默认）时留空即可，行为与以前完全一致。 */
+  gmdAuthUser?: string
+  gmdAuthPass?: string
 }
 
 /** 合法音质档位（对齐前端设置页下拉选项 static/index.html #configDefaultQuality） */
@@ -110,6 +115,11 @@ export function normalizeConfig(raw: Partial<GoMusicDlConfig>): GoMusicDlConfig 
   } else {
     parsed.serverHost = ''
   }
+  // gmd 管理员凭据：可选；用户名去空白，密码保留原样（可能含首尾空格）
+  parsed.gmdAuthUser =
+    typeof parsed.gmdAuthUser === 'string' ? parsed.gmdAuthUser.trim() : ''
+  parsed.gmdAuthPass =
+    typeof parsed.gmdAuthPass === 'string' ? parsed.gmdAuthPass : ''
   // 默认音质：白名单收口，非法/缺失回退默认（与前端下拉一致，避免任意值流入上游 extra.level）
   parsed.defaultQuality = (QUALITY_LEVELS as readonly string[]).includes(
     String(parsed.defaultQuality || ''),

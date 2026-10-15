@@ -452,6 +452,32 @@ export async function openAlbum(pl) {
   return openCollection(pl, 'album', true)
 }
 
+// 打开一首不缺的「内存歌曲列表」视图（榜单歌曲等已一次性拿全的数据）：
+// 不走加载请求，直接渲染；currentCollection 记为 all_songs 端点，
+// 使「导入歌单」按钮把当前列表整批导入（loadAllCollectionSongs 对该端点直返内存数据）。
+export function openSongsView(title, songs) {
+  if (store.swappedSongs) store.swappedSongs.clear()
+  store.songsBackToMyList = !!document
+    .getElementById('tab-mylist')
+    .classList.contains('active')
+  const pl = { title, songs: songs || [], id: '', source: '' }
+  currentCollection = { pl, endpoint: 'all_songs', showImport: true }
+  document.getElementById('myPlaylistView').style.display = 'none'
+  document.getElementById('mySongsView').style.display = 'block'
+  document.getElementById('mySongsTitle').textContent = title || '歌曲列表'
+  const listEl = document.getElementById('mySongsList')
+  hideCollectionPager()
+  hideCollectionHeader()
+  listEl.innerHTML = ''
+  if (!songs || !songs.length) {
+    listEl.innerHTML = '<div class="empty-state">暂无歌曲</div>'
+    return
+  }
+  store.queue = songs
+  songs.forEach((s, i) => listEl.appendChild(renderSong(s, i, { showImport: true })))
+  scheduleInspect(listEl)
+}
+
 export function backToPlaylists() {
   document.getElementById('mySongsView').style.display = 'none'
   if (store.songsBackToMyList) {
@@ -462,6 +488,8 @@ export function backToPlaylists() {
 // 抓取歌单/专辑的全部歌曲（跨分页，最多 100 页防异常死循环），
 // 复用详情页同款解析逻辑，供「整张导入」入口一次性拿到全量 songs。
 async function loadAllCollectionSongs(pl, endpoint) {
+  // all_songs：榜单等内存列表，歌曲已在 pl.songs，直接返回
+  if (endpoint === 'all_songs') return pl.songs || []
   const base = normalizeBaseUrl(store.config.baseUrl)
   if (!base) return []
   const all = []

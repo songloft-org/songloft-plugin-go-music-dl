@@ -23,6 +23,7 @@ import { testConnection, switchSource } from './api.js'
 import { applySwitchedSong } from './songlist.js'
 import { showSnackbar, hideSnackbar } from './util.js'
 import { loadConfig, saveConfig, setAllSources, autoFillServerHost } from './config.js'
+import { initQrLogin } from './qrlogin.js'
 import {
   openSyncPanel,
   closeSyncPanel,
@@ -44,6 +45,7 @@ import {
 import {
   loadDiscoverRecommend,
   loadDiscoverCategories,
+  loadDiscoverToplists,
 } from './discover.js'
 import {
   openImportPanel,
@@ -192,7 +194,10 @@ document.addEventListener('DOMContentLoaded', () => {
       store.currentSearchType = btn.dataset.type || 'song'
     }
   })
-  document.getElementById('saveConfigBtn').onclick = saveConfig
+  // 保存配置：三个设置分组卡片各有一个保存按钮，统一走 saveConfig()（读取全部输入框）
+  document.querySelectorAll('.save-config-btn').forEach((btn) => {
+    btn.onclick = saveConfig
+  })
   // 自动填充对外可达地址：只填不存，阻止冒泡避免误触发保存（本页其他按钮多为「即点即存」交互）
   const afBtn = document.getElementById('autoFillServerHostBtn')
   if (afBtn) {
@@ -233,16 +238,19 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else if (tab === 'discover') {
       const subBtn = document.querySelector('#discoverSubSwitch .mylist-cat.active')
-      const isCategories = subBtn && subBtn.dataset.sub === 'categories'
-      if (isCategories) loadDiscoverCategories()
-      else loadDiscoverRecommend()
+      const sub = subBtn && subBtn.dataset.sub
+      if (sub === 'categories') loadDiscoverCategories()
+      else if (sub === 'toplists') {
+        store.discoverToplistsLoaded = false
+        loadDiscoverToplists()
+      } else loadDiscoverRecommend()
     } else if (tab === 'mylist') {
       loadUserPlaylists()
     } else if (tab === 'config') {
       loadConfig()
     }
   }
-  // 发现页：每日推荐 / 分类歌单 子切换
+  // 发现页：每日推荐 / 分类歌单 / 排行榜 子切换
   const discoverSub = document.getElementById('discoverSubSwitch')
   if (discoverSub) {
     discoverSub.querySelectorAll('.mylist-cat').forEach((btn) => {
@@ -256,10 +264,37 @@ document.addEventListener('DOMContentLoaded', () => {
           sub === 'recommend' ? 'block' : 'none'
         document.getElementById('discoverCategoriesSection').style.display =
           sub === 'categories' ? 'block' : 'none'
+        document.getElementById('discoverToplistsSection').style.display =
+          sub === 'toplists' ? 'block' : 'none'
         if (sub === 'recommend' && !store.discoverRecommendLoaded)
           loadDiscoverRecommend()
         if (sub === 'categories' && !store.discoverCatsLoaded)
           loadDiscoverCategories()
+        if (sub === 'toplists' && !store.discoverToplistsLoaded)
+          loadDiscoverToplists()
+      }
+    })
+  }
+  initQrLogin()
+  // 设置页：服务连接 / 音源与音质 / 账号登录 / 网络进阶 二级分类切换（显隐分组卡片，保存逻辑不变）
+  const configSub = document.getElementById('configSubSwitch')
+  if (configSub) {
+    const sections = {
+      connection: document.getElementById('configConnectionSection'),
+      sources: document.getElementById('configSourcesSection'),
+      login: document.getElementById('configLoginSection'),
+      advanced: document.getElementById('configAdvancedSection'),
+    }
+    configSub.querySelectorAll('.mylist-cat').forEach((btn) => {
+      btn.onclick = () => {
+        configSub
+          .querySelectorAll('.mylist-cat')
+          .forEach((b) => b.classList.remove('active'))
+        btn.classList.add('active')
+        const key = btn.dataset.cfg
+        Object.keys(sections).forEach((k) => {
+          if (sections[k]) sections[k].style.display = k === key ? 'block' : 'none'
+        })
       }
     })
   }

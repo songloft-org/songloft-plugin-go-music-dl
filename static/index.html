@@ -140,6 +140,25 @@
         #castBtn { flex: 0 0 auto; }
         #castBtn svg { display: block; }
         #castBtn.cast-active { color: var(--md-primary, #5b5fc7); background: rgba(99,102,241,.12); }
+        /* 扫码登录（设置页「账号登录」分组） */
+        .qr-source-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--md-outline-variant, #eee); }
+        .qr-source-row:last-child { border-bottom: none; }
+        .qr-source-name { font-size: 14px; color: var(--md-on-surface, #1f1f1f); }
+        .qr-source-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+        .qr-panel { z-index: 210; }
+        .qr-body { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 18px 16px; }
+        .qr-code-wrap { display: flex; align-items: center; justify-content: center; width: 240px; height: 240px; background: #fff; border-radius: 12px; overflow: hidden; }
+        .qr-image, #qrCanvas { display: block; }
+        .qr-busy { font-size: 13px; color: var(--md-on-surface-variant, #666); }
+        .qr-status { font-size: 13px; color: var(--md-on-surface-variant, #666); text-align: center; min-height: 18px; }
+        .qr-status.success { color: #2e7d32; }
+        .qr-status.err { color: #c62828; }
+        .qr-status.ok { color: var(--md-primary, #5b5fc7); }
+        [data-theme="dark"] .qr-status.success { color: #81c784; }
+        [data-theme="dark"] .qr-status.err { color: #ef9a9a; }
+        /* 已下载徽标（go-music-dl 服务器下载记录命中） */
+        .song-dl-tag { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 999px; line-height: 1.6; font-weight: 600; background: rgba(46,125,50,.14); color: #2e7d32; }
+        [data-theme="dark"] .song-dl-tag { background: rgba(129,199,132,.18); color: #81c784; }
     </style>
     <script>
       // 主题联动：响应宿主 postMessage('songloft-theme') 与 document 上的 data-theme，
@@ -222,6 +241,7 @@
                     <div class="mylist-cats" id="discoverSubSwitch" style="padding:0;">
                         <button type="button" class="mylist-cat active" data-sub="recommend">每日推荐</button>
                         <button type="button" class="mylist-cat" data-sub="categories">分类歌单</button>
+                        <button type="button" class="mylist-cat" data-sub="toplists">排行榜</button>
                     </div>
                 </div>
             </div>
@@ -253,6 +273,17 @@
                     <div class="card-body">
                         <div id="discoverCatHeader" style="margin-bottom:12px;"></div>
                         <div id="discoverCatPlaylists" class="playlist-grid" style="padding-top:0"><div class="empty-state">选择上方分类查看歌单</div></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="discoverToplistsSection" style="display:none;">
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">排行榜</div>
+                    <div class="card-body">
+                        <div class="card-desc" style="margin-bottom:10px;">各平台官方榜单（热歌 / 飙升 / TOP500 等），点击榜单查看歌曲并支持播放与整单导入。</div>
+                        <div class="mylist-cats" id="toplistSources"></div>
+                        <div id="toplistList" class="playlist-grid" style="padding-top:0"><div class="empty-state">选择上方平台查看榜单</div></div>
                     </div>
                 </div>
             </div>
@@ -295,54 +326,119 @@
 
     <div class="tab-content" id="tab-config">
         <div class="container">
-            <div class="card">
-                <div class="card-header">基础设置</div>
-                <div class="card-body">
-                    <div class="form-group">
-                        <label class="form-label">go-music-dl 服务地址</label>
-                        <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">内网 / 默认</div>
-                        <input type="text" class="text-field" id="configBaseUrl" placeholder="http://192.168.1.190:8080">
-                        <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（插件按下方 Base Path 拼接前缀，默认 /music）</div>
-                        <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">外网访问地址（可选）</div>
-                        <input type="text" class="text-field" id="configExternalBaseUrl" placeholder="https://你的公网域名:端口">
-                        <div class="card-desc" style="padding:0;margin-top:4px;">当主程序通过公网域名/IP 被外网访问时，前端自动改用此地址直连 go-music-dl；留空则内外网都用上面的内网地址。建议配 https，以免主程序为 https 时被混合内容拦截。</div>
-                        <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">Base Path（挂载路径，默认 /music）</div>
-                        <input type="text" class="text-field" id="configBasePath" placeholder="/music">
-                        <div class="card-desc" style="padding:0;margin-top:4px;">go-music-dl Web 服务的挂载路径，内外网共用。默认 /music；若启动时用 --base-path 参数改过（如 --base-path /dl），请在此填写相同值，否则所有请求 404。</div>
-                        <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">对外可达地址（音箱播放用，可选）</div>
-                        <div style="display:flex;gap:8px;align-items:center;">
-                            <input type="text" class="text-field" id="configServerHost" placeholder="http://192.168.1.190:58091" style="flex:1;">
-                            <button class="btn-text" id="autoFillServerHostBtn" type="button">自动填充</button>
-                        </div>
-                        <div class="card-desc" style="padding:0;margin-top:4px;">智能音箱（MIoT）调用本插件「不入库直推」播放时，需要一个音箱可直连的本插件地址。留空时按 baseUrl host → 宿主地址 → 网卡 LAN 地址顺序自动推导；若自动推导失败（如宿主只监听 127.0.0.1），请显式填写可被音箱访问的 Songloft 主机地址。</div>
-                        <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
-                        <div class="conn-row">
-                            <button class="btn-text" id="testConnBtn" type="button">测试连接</button>
-                            <span class="conn-status" id="connStatus"></span>
-                        </div>
-                        <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
-                            <button class="btn-filled" id="saveConfigBtn">保存配置</button>
-                        </div>
-                    </div>
-                    <div class="form-group" style="margin-top:16px;">
-                        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-                            <label class="form-label" style="margin:0;">搜索音源</label>
-                            <div style="display:flex; gap:8px;">
-                                <button type="button" class="btn-text" id="selectAllSourcesBtn">全选</button>
-                                <button type="button" class="btn-text" id="clearAllSourcesBtn">清空</button>
+            <!-- 设置二级分类：与发现页子切换同款 chips（.mylist-cat），分组切换只做显隐，
+                 保存逻辑统一走 saveConfig()（读取全部输入框，与分组显隐无关） -->
+            <div class="mylist-cats" id="configSubSwitch" style="padding:0;">
+                <button type="button" class="mylist-cat active" data-cfg="connection">服务连接</button>
+                <button type="button" class="mylist-cat" data-cfg="sources">音源与音质</button>
+                <button type="button" class="mylist-cat" data-cfg="login">账号登录</button>
+                <button type="button" class="mylist-cat" data-cfg="advanced">网络进阶</button>
+            </div>
+
+            <!-- 服务连接：最常用项（服务地址 + 连通性自检） -->
+            <div id="configConnectionSection" style="margin-top:16px;">
+                <div class="card">
+                    <div class="card-header">服务连接</div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <label class="form-label">go-music-dl 服务地址</label>
+                            <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">内网 / 默认</div>
+                            <input type="text" class="text-field" id="configBaseUrl" placeholder="http://192.168.1.190:8080">
+                            <div class="card-desc" style="padding:0;margin-top:4px;">填根地址即可，例如 http://你的服务器地址:8080（挂载路径默认 /music，改过请到「网络进阶」填写 Base Path）</div>
+                            <a class="project-link" href="https://github.com/guohuiyuan/go-music-dl" target="_blank" rel="noopener noreferrer">未部署？点击前往项目地址自行部署服务 ↗</a>
+                            <div class="conn-row">
+                                <button class="btn-text" id="testConnBtn" type="button">测试连接</button>
+                                <span class="conn-status" id="connStatus"></span>
+                            </div>
+                            <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
+                                <button class="btn-filled save-config-btn">保存配置</button>
                             </div>
                         </div>
-                        <div class="source-box" id="configSources"></div>
                     </div>
-                    <div class="form-group" style="margin-top:16px;">
-                        <label class="form-label">默认音质</label>
-                        <select class="select-field" id="configDefaultQuality">
-                            <option value="standard">标准 (128 kbps)</option>
-                            <option value="exhigh">高品质 (320 kbps)</option>
-                            <option value="lossless">无损 (FLAC)</option>
-                            <option value="hires">Hi-Res</option>
-                        </select>
-                        <div class="card-desc" style="padding:0;margin-top:4px;">网易云支持无损/Hi-Res（需登录且有相应权限）；未登录或非网易云时按服务默认可用音质播放。</div>
+                </div>
+            </div>
+
+            <!-- 音源与音质 -->
+            <div id="configSourcesSection" style="margin-top:16px; display:none;">
+                <div class="card">
+                    <div class="card-header">音源与音质</div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                                <label class="form-label" style="margin:0;">搜索音源</label>
+                                <div style="display:flex; gap:8px;">
+                                    <button type="button" class="btn-text" id="selectAllSourcesBtn">全选</button>
+                                    <button type="button" class="btn-text" id="clearAllSourcesBtn">清空</button>
+                                </div>
+                            </div>
+                            <div class="source-box" id="configSources"></div>
+                        </div>
+                        <div class="form-group" style="margin-top:16px;">
+                            <label class="form-label">默认音质</label>
+                            <select class="select-field" id="configDefaultQuality">
+                                <option value="standard">标准 (128 kbps)</option>
+                                <option value="exhigh">高品质 (320 kbps)</option>
+                                <option value="lossless">无损 (FLAC)</option>
+                                <option value="hires">Hi-Res</option>
+                            </select>
+                            <div class="card-desc" style="padding:0;margin-top:4px;">网易云支持无损/Hi-Res（需登录且有相应权限）；未登录或非网易云时按服务默认可用音质播放。</div>
+                        </div>
+                        <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
+                            <button class="btn-filled save-config-btn">保存配置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 账号登录：扫码走 go-music-dl 已实现链路（Cookie 落在 gmd 侧），解锁无损/我的歌单 -->
+            <div id="configLoginSection" style="margin-top:16px; display:none;">
+                <div class="card">
+                    <div class="card-header">平台扫码登录</div>
+                    <div class="card-body">
+                        <div class="card-desc" style="margin-bottom:10px;">扫码后 Cookie 保存到 go-music-dl 服务端（本插件不经手），用于解锁网易云无损 / Hi-Res、账号歌单同步等能力。QQ 音乐会员高音质同样依赖此处登录。</div>
+                        <div id="qrSourceList"></div>
+                        <div class="card-desc" style="margin-top:10px;">若提示 401 且已填写下方管理员账号，请检查账号是否正确；未开启登录鉴权的实例无需填写。</div>
+                    </div>
+                </div>
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-header">go-music-dl 管理员账号（可选）</div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <div class="card-desc" style="margin-bottom:10px;">仅当 go-music-dl 实例开启了 Web 登录鉴权时需要填写（家用/桌面默认关闭，可跳过）。填写后插件自动登录，扫码登录等系统操作即可正常使用；凭据仅保存在本机插件数据目录。</div>
+                            <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">用户名</div>
+                            <input type="text" class="text-field" id="configGmdAuthUser" placeholder="go-music-dl 管理员用户名" autocomplete="off">
+                            <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">密码</div>
+                            <input type="password" class="text-field" id="configGmdAuthPass" placeholder="go-music-dl 管理员密码" autocomplete="new-password">
+                        </div>
+                        <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
+                            <button class="btn-filled save-config-btn">保存配置</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 网络进阶：外网直连 / 挂载路径 / 音箱对外地址 -->
+            <div id="configAdvancedSection" style="margin-top:16px; display:none;">
+                <div class="card">
+                    <div class="card-header">网络进阶</div>
+                    <div class="card-body">
+                        <div class="form-group">
+                            <div style="font-size:13px;color:#b9b9b9;margin:2px 0 6px;">外网访问地址（可选）</div>
+                            <input type="text" class="text-field" id="configExternalBaseUrl" placeholder="https://你的公网域名:端口">
+                            <div class="card-desc" style="padding:0;margin-top:4px;">当主程序通过公网域名/IP 被外网访问时，前端自动改用此地址直连 go-music-dl；留空则内外网都用内网地址。建议配 https，以免主程序为 https 时被混合内容拦截。</div>
+                            <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">Base Path（挂载路径，默认 /music）</div>
+                            <input type="text" class="text-field" id="configBasePath" placeholder="/music">
+                            <div class="card-desc" style="padding:0;margin-top:4px;">go-music-dl Web 服务的挂载路径，内外网共用。默认 /music；若启动时用 --base-path 参数改过（如 --base-path /dl），请在此填写相同值，否则所有请求 404。</div>
+                            <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">对外可达地址（音箱播放用，可选）</div>
+                            <div style="display:flex;gap:8px;align-items:center;">
+                                <input type="text" class="text-field" id="configServerHost" placeholder="http://192.168.1.190:58091" style="flex:1;">
+                                <button class="btn-text" id="autoFillServerHostBtn" type="button">自动填充</button>
+                            </div>
+                            <div class="card-desc" style="padding:0;margin-top:4px;">智能音箱（MIoT）调用本插件「不入库直推」播放时，需要一个音箱可直连的本插件地址。留空时按 baseUrl host → 宿主地址 → 网卡 LAN 地址顺序自动推导；若自动推导失败（如宿主只监听 127.0.0.1），请显式填写可被音箱访问的 Songloft 主机地址。</div>
+                            <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
+                                <button class="btn-filled save-config-btn">保存配置</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -412,6 +508,23 @@
       <div class="dialog-footer">
         <button class="btn-text" onclick="closeNewPlaylistDialog()">取消</button>
         <button class="btn-filled" id="confirmNewPlaylist">确定</button>
+      </div>
+    </div>
+
+    <!-- 扫码登录弹窗：二维码（官方图或内置 canvas 生成）+ 状态 + 刷新 -->
+    <div id="qrPanel" class="dialog-panel qr-panel">
+      <div class="dialog-title" id="qrTitle">扫码登录</div>
+      <div class="dialog-body qr-body">
+        <div class="qr-code-wrap">
+          <img id="qrImage" class="qr-image" alt="二维码" style="display:none;" referrerpolicy="no-referrer">
+          <canvas id="qrCanvas" style="display:none;"></canvas>
+          <div id="qrBusy" class="qr-busy" style="display:none;">正在生成二维码…</div>
+        </div>
+        <div id="qrStatus" class="qr-status">正在生成二维码…</div>
+        <button class="btn-text" id="qrRefreshBtn" type="button" style="display:none;">刷新二维码</button>
+      </div>
+      <div class="dialog-footer">
+        <button class="btn-text" id="qrCloseBtn" type="button">关闭</button>
       </div>
     </div>
 

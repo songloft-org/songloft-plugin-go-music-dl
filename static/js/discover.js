@@ -1,14 +1,16 @@
-// discover.js — 「发现」页：每日推荐 + 分类歌单。
-// 直接复用 go-music-dl 的 /recommend、/playlist_categories、/category_playlists，
-// 并用 playlists.js 现有的 parsePlaylists / renderPlaylistRow 渲染（点卡片即可进详情+导入）。
+// discover.js — 「发现」页：每日推荐 + 分类歌单 + 排行榜。
+// 推荐与分类直接复用 go-music-dl 的 /recommend、/playlist_categories、/category_playlists，
+// 并用 playlists.js 现有的 parsePlaylists / renderPlaylistRow 渲染（点卡片即可进详情+导入）；
+// 排行榜走插件后端 /toplists、/toplist_songs（仅 go-music-dl 后端有该能力）。
 import {
   store,
   ALL_SOURCES,
   sourceLabel,
+  FALLBACK_COVER,
 } from './state.js'
-import { normalizeBaseUrl, gmdFetch, isNetworkError } from './api.js'
+import { normalizeBaseUrl, gmdFetch, isNetworkError, API } from './api.js'
 import { escapeHtml } from './util.js'
-import { parsePlaylists, renderPlaylistRow } from './playlists.js'
+import { parsePlaylists, renderPlaylistRow, openSongsView } from './playlists.js'
 
 // 分类数据：{ sources: [{ source, name, groups: [{ name, categories: [{ name, query }] }] }] }
 let catData = null
@@ -301,4 +303,128 @@ function parseCategoryHeader(html) {
     ? summaryEl.textContent.replace(/\s+/g, ' ').trim()
     : ''
   return { countText, summaryText }
+}
+
+// ---------- 排行榜（go-music-dl /toplists、/toplist_songs，经插件后端 JSON 转发） ----------
+
+let toplistData = null // GoTopList[]（含 source 字段，按源分组渲染）
+let toplistSource = '' // 当前查看的平台
+
+export async function loadDiscoverToplists() {
+  const chipsEl = document.getElementById('toplistSources')
+  const gridEl = document.getElementById('toplistList')
+  if (!store.config.baseUrl) {
+    empty(chipsEl, '请先在「插件设置」中填写 go-music-dl 服务地址')
+    if (gridEl) gridEl.innerHTML = ''
+    return
+  }
+  empty(gridEl, '加载中…')
+  if (chipsEl) chipsEl.innerHTML = ''
+  try {
+    const r = await API.toplists(activeSources())
+    const lists = Array.isArray(r.lists) ? r.lists : []
+    if (!lists.length) {
+      empty(gridEl, '暂无可用榜单（该实例的 go-music-dl 版本可能过低，请升级后重试）')
+      return
+    }
+    toplistData = lists
+    // 平台 chips：按数据中实际出现的源排序（对齐用户勾选顺序）
+    const present = []
+    const seen = new Set()
+    for (const s of ALL_SOURCES) {
+      if (lists.some((t) => t.source === s) && !seen.has(s)) {
+        present.push(s)
+        seen.add(s)
+      }
+    }
+    if (!present.length) {
+      empty(gridEl, '暂无可用榜单')
+      return
+    }
+    toplistSource = toplistSource && seen.has(toplistSource) ? toplistSource : present[0]
+    renderToplistSources(present)
+    renderToplistsBySource()
+    store.discoverToplistsLoaded = true
+  } catch (e) {
+    empty(
+      gridEl,
+      isNetworkError(e) ? '无法连接服务，请检查 go-music-dl 是否启动' : e.message,
+    )
+  }
+}
+
+function renderToplistSources(present) {
+  const bar = document.getElementById('toplistSources')
+  if (!bar) return
+  bar.innerHTML = ''
+  present.forEach((s) => {
+    const count = toplistData.filter((t) => t.source === s).length
+    const chip = document.createElement('button')
+    chip.className = 'mylist-cat' + (s === toplistSource ? ' active' : '')
+    chip.textContent = `${sourceLabel(s) || s} · ${count}`
+    chip.onclick = () => {
+      toplistSource = s
+      renderToplistSources(present)
+      renderToplistsBySource()
+    }
+    bar.appendChild(chip)
+  })
+}
+
+function renderToplistsBySource() {
+  const gridEl = document.getElementById('toplistList')
+  if (!gridEl) return
+  const lists = toplistData.filter((t) => t.source === toplistSource)
+  if (!lists.length) {
+    gridEl.innerHTML = '<div class="empty-state">该平台暂无榜单</div>'
+    return
+  }
+  gridEl.innerHTML = ''
+  lists.forEach((t) => gridEl.appendChild(renderToplistRow(t)))
+}
+
+function renderToplistRow(t) {
+  const card = document.createElement('div')
+  card.className = 'playlist-card'
+  const cover = buildCoverProxy(t.cover) || FALLBACK_COVER
+  card.innerHTML = `
+    <div class="playlist-cover">
+      <img src="${escapeHtml(cover)}" loading="lazy" referrerpolicy="no-referrer">
+      ${t.updateFrequency ? `<span class="playlist-source-tag">${escapeHtml(t.updateFrequency)}</span>` : ''}
+    </div>
+    <div class="playlist-meta">
+      <div class="playlist-title">${escapeHtml(t.name)}</div>
+      <div class="playlist-sub">${escapeHtml(sourceLabel(t.source) || t.source)}${t.trackCount ? ` · ${t.trackCount} 首` : ''}</div>
+    </div>`
+  card.onclick = () => openToplist(t)
+  return card
+}
+
+function buildCoverProxy(raw) {
+  if (!raw) return ''
+  const b = base()
+  if (!b) return raw
+  if (/^(data:|blob:)/i.test(raw)) return raw
+  if (raw.startsWith(b)) return raw
+  return `${b}/cover_proxy?url=${encodeURIComponent(raw)}`
+}
+
+async function openToplist(t) {
+  const gridEl = document.getElementById('toplistList')
+  if (gridEl) gridEl.innerHTML = '<div class="empty-state">加载榜单歌曲…</div>'
+  try {
+    const r = await API.toplistSongs(t.source, t.toplistId)
+    const songs = Array.isArray(r.items) ? r.items : []
+    if (!songs.length) {
+      empty(gridEl, '该榜单暂无歌曲')
+      return
+    }
+    store.discoverToplistsSongs = songs
+    await openSongsView(`${sourceLabel(t.source) || t.source} · ${t.name}`, songs)
+  } catch (e) {
+    empty(gridEl, isNetworkError(e) ? '无法连接服务' : escapeHtml(e.message || '加载失败'))
+  } finally {
+    // 返回入口在歌曲列表视图内；此处恢复榜单网格供再次浏览
+    renderToplistsBySource()
+  }
 }

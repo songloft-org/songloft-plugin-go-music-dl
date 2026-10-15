@@ -525,3 +525,136 @@ export function buildCoverProxyUrl(
   return `${base}/cover_proxy?url=${encodeURIComponent(rawCover)}`
 }
 
+// ---------- 排行榜（go-music-dl /music/toplists、/music/toplist_songs，仅 dl 有） ----------
+
+export interface GoTopList {
+  source: string
+  /** 榜单名（query toplist_name / 卡片标题） */
+  name: string
+  toplistId: string
+  updateFrequency: string
+  cover: string
+  description: string
+  trackCount: number
+}
+
+/**
+ * 解析 /toplists 页面中的榜单卡片。
+ * 上游卡片（partials/toplists.html）形如：
+ *   <a class="toplist-card" href="{root}/toplist_songs?source=..&toplist_id=..&toplist_name=..
+ *      &update_frequency=..&cover=..&description=..&track_count=.." title="...">
+ * 全部字段都在 href 的 query 里，正则取 href 后解码即可，不依赖卡片内部 DOM 结构。
+ */
+export function parseTopListCards(html: string): GoTopList[] {
+  const out: GoTopList[] = []
+  const seen = new Set<string>()
+  const re =
+    /<a\s+class="toplist-card"\s+href="([^"]+)"[^>]*>/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(html))) {
+    let url: URL
+    try {
+      url = new URL(unescapeHtml(m[1]), 'http://placeholder.local')
+    } catch {
+      continue
+    }
+    if (!url.searchParams.get('toplist_id')) continue
+    const source = url.searchParams.get('source') || ''
+    const id = url.searchParams.get('toplist_id') || ''
+    const key = `${source}__${id}`
+    if (!source || seen.has(key)) continue
+    seen.add(key)
+    out.push({
+      source,
+      name: unescapeHtml(url.searchParams.get('toplist_name') || id),
+      toplistId: id,
+      updateFrequency: unescapeHtml(url.searchParams.get('update_frequency') || ''),
+      cover: unescapeHtml(url.searchParams.get('cover') || ''),
+      description: unescapeHtml(url.searchParams.get('description') || ''),
+      trackCount: Number(url.searchParams.get('track_count')) || 0,
+    })
+  }
+  return out
+}
+
+/** 拉取榜单目录页（HTML），sources 缺省时用插件配置的音源与上游默认一致 */
+export async function fetchTopLists(
+  config: GoMusicDlConfig,
+  sources?: string[],
+  timeoutMs = 25000,
+): Promise<GoTopList[]> {
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  const list =
+    sources && sources.length
+      ? sources
+      : config.sources && config.sources.length
+        ? config.sources
+        : DEFAULT_SOURCES
+  const params = list.map((s) => `sources=${encodeURIComponent(s)}`).join('&')
+  const html = await fetchText(`${base}/toplists?${params}`, timeoutMs)
+  return parseTopListCards(html)
+}
+
+/** 拉取榜单歌曲页（与歌单详情共用 song_list 模板，复用 parseSongCards） */
+export async function fetchTopListSongs(
+  config: GoMusicDlConfig,
+  topList: { source: string; id: string },
+  timeoutMs = 25000,
+): Promise<GoSong[]> {
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  const url =
+    `${base}/toplist_songs` +
+    `?source=${encodeURIComponent(topList.source)}` +
+    `&toplist_id=${encodeURIComponent(topList.id)}`
+  const html = await fetchText(url, timeoutMs)
+  return parseSongCards(html)
+}
+
+// ---------- 下载记录（go-music-dl /music/api/downloads/records，已下载标记用） ----------
+
+export interface GoDownloadRecord {
+  name: string
+  artist: string
+  source: string
+  status: string
+}
+
+/**
+ * 分页拉取服务器下载记录（status: success/skipped/failed）。
+ * records 用于「已下载」徽标：拉前几页（每页上限 100）足够覆盖近期下载。
+ */
+export async function fetchDownloadRecords(
+  config: GoMusicDlConfig,
+  pages = 3,
+  timeoutMs = 10000,
+): Promise<GoDownloadRecord[]> {
+  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  const out: GoDownloadRecord[] = []
+  for (let page = 1; page <= Math.max(1, pages); page++) {
+    const data: any = await requestJsonAny(
+      `${base}/api/downloads/records?page=${page}&page_size=100`,
+      timeoutMs,
+    )
+    const records = Array.isArray(data && data.records) ? data.records : []
+    for (const r of records) {
+      if (r && typeof r.name === 'string') {
+        out.push({
+          name: r.name,
+          artist: typeof r.artist === 'string' ? r.artist : '',
+          source: typeof r.source === 'string' ? r.source : '',
+          status: typeof r.status === 'string' ? r.status : '',
+        })
+      }
+    }
+    const totalPages = Number(data && data.total_pages) || 1
+    if (page >= totalPages) break
+  }
+  return out
+}
+
+/** GET JSON（下载记录等轻量接口；错误静默抛出，由调用方决定降级） */
+async function requestJsonAny(url: string, timeoutMs: number): Promise<any> {
+  const text = await fetchText(url, timeoutMs)
+  return JSON.parse(text)
+}
+

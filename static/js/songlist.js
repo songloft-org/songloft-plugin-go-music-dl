@@ -11,6 +11,7 @@ import { switchSource, buildCoverUrl, inspectSong } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
 import { savePlaybackState } from './persist.js'
+import { isDownloaded, ensureDownloaded, markListDownloaded, downloadedKey } from './downloaded.js'
 
 export function songKey(s) {
   return `${s.source || ''}__${(s.id != null ? s.id : '')}`
@@ -133,6 +134,8 @@ export function scheduleInspect(list) {
   Array.from(list.children).forEach((card, i) => {
     setTimeout(() => inspectCard(card, validByKey), i * 80)
   })
+  // 已下载标记：记录集合就绪后为命中行补挂徽标（renderSong 时已写入 __dlKey）
+  markListDownloaded(list)
 }
 
 export function renderSong(s, index, opts = {}) {
@@ -145,6 +148,9 @@ export function renderSong(s, index, opts = {}) {
   // 使序号跨页连续（如第 2 页从 31 起），与 page-summary「显示 x - y / total」对齐。
   const number = (opts.startIndex && opts.startIndex > 0 ? opts.startIndex : 1) + index
   const key = songKey(s)
+  // 已下载匹配键：挂到行元素上，scheduleInspect → markListDownloaded 补挂徽标用
+  card.__dlKey = downloadedKey(s)
+  const dlTag = isDownloaded(s) ? '<span class="song-dl-tag">已下载</span>' : ''
   const sel = store.selectMode && store.selectedSongs.has(key)
   const checkHtml = store.selectMode
     ? `<div class="song-check" data-act="check"><span class="song-check-box${sel ? ' checked' : ''}">${sel ? '✓' : ''}</span></div>`
@@ -166,6 +172,7 @@ export function renderSong(s, index, opts = {}) {
       <div class="song-tags">
         <span class="song-status status-pending">待检测</span>
         <span class="song-bitrate" style="display:none;"></span>
+        ${dlTag}
       </div>
     </div>
     <div class="song-actions">

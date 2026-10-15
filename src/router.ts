@@ -14,7 +14,11 @@ import {
   buildCoverProxyUrl,
   fetchLyric,
   fetchLyricRaw,
+  fetchTopLists,
+  fetchTopListSongs,
+  fetchDownloadRecords,
   GoSong,
+  GoTopList,
 } from './client'
 import { TTLCache } from './cache'
 import {
@@ -24,6 +28,9 @@ import {
 } from './lyrics-format'
 import { encodeToken, decodeToken, loopbackToLan } from './bridge-contract'
 import { callHostApi } from './host'
+import { QR_SOURCES, qrStart, qrPoll } from './qrlogin'
+import { clearCachedSession } from './gmd-auth'
+import type { QRSession } from './qrlogin'
 import {
   probeDownloadable,
   resolveImportableItem,
@@ -72,6 +79,9 @@ const hitCache = new TTLCache<GoSong>(600_000, 100) // 回搜命中
 const lyricCache = new TTLCache<Record<string, string>>(86_400_000, 200) // lyric-search 结果
 const lyricProxyCache = new TTLCache<string>(86_400_000, 200) // /api/lyric（前端）
 const coverCache = new TTLCache<string>(86_400_000, 200) // cover-search 结果
+const toplistCache = new TTLCache<GoTopList[]>(600_000, 10) // 榜单目录（变化慢）
+const toplistSongsCache = new TTLCache<GoSong[]>(300_000, 50) // 榜单歌曲
+const dlRecordsCache = new TTLCache<Record<string, boolean>>(600_000, 2) // 已下载标记（key 归一化）
 
 function clearCaches(): void {
   searchCache.clear()
@@ -81,6 +91,9 @@ function clearCaches(): void {
   lyricCache.clear()
   lyricProxyCache.clear()
   coverCache.clear()
+  toplistCache.clear()
+  toplistSongsCache.clear()
+  dlRecordsCache.clear()
 }
 
 /**
@@ -159,8 +172,10 @@ router.post('/config', async (req: HTTPRequest) => {
   const config = await getConfig()
   const newConfig = { ...config, ...data }
   await saveConfig(newConfig)
-  // 配置变化（地址/音源/音质）会使已缓存结果的输入失效，全部清空
+  // 配置变化（地址/音源/音质/凭据）会使已缓存结果的输入失效，全部清空；
+  // gmd session 缓存一并失效（凭据可能已更换，避免沿用旧会话）
   clearCaches()
+  await clearCachedSession()
   return jsonResponse({ success: true, config: newConfig })
 })
 
@@ -842,7 +857,147 @@ router.post('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
   }
 })
 
-// ---------- 歌单手动同步（单向：go-music-dl 账号歌单 → Songloft 本地歌单） ----------
+// ---------- 扫码登录（转发 go-music-dl /qr_login，Cookie 由 gmd 落库，插件不经手凭据） ----------
+
+// 支持扫码的平台列表（与 gmd core.GetQRLoginCreateFunc 对齐，排除 soda 短信分支）
+router.get('/qr/sources', async () => {
+  return jsonResponse({ sources: QR_SOURCES })
+})
+
+// 创建扫码会话：body { source }。返回 { session }（含 url/image_url/key）
+router.post('/qr/start', async (req: HTTPRequest) => {
+  const body = parseBody(req)
+  const source = String(body.source || '').trim()
+  if (!source) return jsonResponse({ error: 'source is required' }, 400)
+  try {
+    const config = await getConfig()
+    if (!config.baseUrl) {
+      return jsonResponse({ error: '服务地址未配置，请先在设置中填写' }, 400)
+    }
+    const session: QRSession = await qrStart(source, config)
+    return jsonResponse({ session })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      502,
+    )
+  }
+})
+
+// 轮询扫码状态：GET ?source=&key=。返回 { status, message?, cookie_saved? }
+router.get('/qr/poll', async (req: HTTPRequest) => {
+  const q = parseQuery(req.query)
+  const source = String(q.source || '')
+  const key = String(q.key || '')
+  if (!source || !key) return jsonResponse({ error: 'source and key are required' }, 400)
+  try {
+    const config = await getConfig()
+    const result = await qrPoll(source, key, config)
+    return jsonResponse({
+      status: result.status,
+      message: result.message || '',
+      cookie_saved:
+        !!result.extra && String(result.extra.cookie_saved || '') === 'true',
+    })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      502,
+    )
+  }
+})
+
+// ---------- 排行榜（go-music-dl /toplists、/toplist_songs，仅 dl 后端有） ----------
+
+// 榜单目录：GET /toplists?sources=netease,qq,...（缺省用插件配置音源）。
+// 榜单目录变化慢，缓存 10min。
+router.get('/toplists', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const q = parseQuery(req.query)
+  const sources = String(q.sources || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!config.baseUrl) {
+    return jsonResponse({ error: '服务地址未配置，请先在设置中填写' }, 400)
+  }
+  const cacheKey = `toplists|${sources.join(',')}`
+  const cached = toplistCache.get(cacheKey)
+  if (cached) return jsonResponse({ lists: cached })
+  try {
+    const lists = await fetchTopLists(config, sources.length ? sources : undefined)
+    toplistCache.set(cacheKey, lists)
+    return jsonResponse({ lists })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      500,
+    )
+  }
+})
+
+// 榜单歌曲：GET /toplist_songs?source=&id=。与歌单详情同模板，缓存 5min。
+router.get('/toplist_songs', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const q = parseQuery(req.query)
+  const source = String(q.source || '')
+  const id = String(q.id || '')
+  if (!source || !id) return jsonResponse({ error: 'source and id are required' }, 400)
+  if (!config.baseUrl) {
+    return jsonResponse({ error: '服务地址未配置，请先在设置中填写' }, 400)
+  }
+  const cacheKey = `toplist|${source}|${id}`
+  const cached = toplistSongsCache.get(cacheKey)
+  if (cached) return jsonResponse({ items: cached })
+  try {
+    const songs = await fetchTopListSongs(config, { source, id })
+    toplistSongsCache.set(cacheKey, songs)
+    return jsonResponse({
+      items: songs.map((s) => ({
+        id: s.id,
+        name: s.name,
+        artist: s.artist,
+        album: s.album,
+        cover: s.cover,
+        source: s.source,
+        duration: s.duration,
+        extra: s.extra,
+      })),
+    })
+  } catch (e) {
+    return jsonResponse(
+      { error: String((e as Error)?.message || e) },
+      500,
+    )
+  }
+})
+
+// ---------- 下载记录（已下载标记用，go-music-dl /api/downloads/records） ----------
+
+// 返回归一化匹配键 → status 的映射（仅 success/skipped 计为已下载；failed 不算）。
+// 拉前 3 页（每页 100）覆盖近期记录，结果缓存 10min。
+router.get('/downloads/records', async () => {
+  const cached = dlRecordsCache.get('all')
+  if (cached) return jsonResponse({ marks: cached })
+  const config = await getConfig()
+  if (!config.baseUrl) return jsonResponse({ marks: {} })
+  try {
+    const records = await fetchDownloadRecords(config, 3)
+    const marks: Record<string, boolean> = {}
+    for (const r of records) {
+      if (r.status !== 'success' && r.status !== 'skipped') continue
+      const key = `${(r.name || '').trim().toLowerCase()}|${(r.artist || '').trim().toLowerCase()}`
+      if (key !== '|') marks[key] = true
+    }
+    dlRecordsCache.set('all', marks)
+    return jsonResponse({ marks })
+  } catch {
+    // 下载记录是增强信息，失败静默降级（不给列表加徽标即可）
+    return jsonResponse({ marks: {} })
+  }
+})
+
+
 // 设计与流程见 src/sync.ts 头注释与 README「歌单同步」章节。
 // 协议为「begin + 循环 step」：begin 创建会话并抓首页，前端循环调 step 推进
 // （每步抓一页 / 比对 / 导入一小批），每步返回实时进度 → 前端刷新进度条；

@@ -15,7 +15,8 @@
     "songs.read",
     "songs.write",
     "playlists.write",
-    "inter-plugin"
+    "inter-plugin",
+    "net"
   ],
   "publicPaths": [
     "/stream"

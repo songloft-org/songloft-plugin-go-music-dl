@@ -7,12 +7,12 @@
     "build": "tsc --noEmit && songloft-plugin build",
     "dev": "songloft-plugin dev",
     "validate": "songloft-plugin validate",
-    "test": "esbuild src/client.ts --bundle --format=esm --outfile=tests/.gen/client.mjs && esbuild src/bridge-contract.ts --bundle --format=esm --outfile=tests/.gen/contract.mjs && esbuild src/sync.ts --bundle --format=esm --outfile=tests/.gen/sync.mjs && esbuild src/config.ts --bundle --format=esm --outfile=tests/.gen/config.mjs && esbuild src/cache.ts --bundle --format=esm --outfile=tests/.gen/cache.mjs && esbuild src/lyrics-format.ts --bundle --format=esm --outfile=tests/.gen/lyrics-format.mjs && node --test \"tests/*.test.mjs\"",
+    "test": "esbuild src/client.ts --bundle --format=esm --outfile=tests/.gen/client.mjs && esbuild src/bridge-contract.ts --bundle --format=esm --outfile=tests/.gen/contract.mjs && esbuild src/sync.ts --bundle --format=esm --outfile=tests/.gen/sync.mjs && esbuild src/config.ts --bundle --format=esm --outfile=tests/.gen/config.mjs && esbuild src/cache.ts --bundle --format=esm --outfile=tests/.gen/cache.mjs && esbuild src/lyrics-format.ts --bundle --format=esm --outfile=tests/.gen/lyrics-format.mjs && esbuild src/gmd-auth.ts --bundle --format=esm --outfile=tests/.gen/gmd-auth.mjs && node --test \"tests/*.test.mjs\"",
     "publish:release": "songloft-plugin publish"
   },
   "devDependencies": {
-    "@songloft/plugin-builder": "^2.0.0-alpha.1",
-    "@songloft/plugin-sdk": "^2.0.0-alpha.1",
+    "@songloft/plugin-builder": "^2.18.0",
+    "@songloft/plugin-sdk": "^2.18.0",
     "typescript": "^5.9.3"
   }
 }

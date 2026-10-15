@@ -174,6 +174,29 @@ export const API = {
       headers: { 'X-Plugin-Timeout-Ms': '60000' },
       body: JSON.stringify({ sessionId }),
     }),
+  // ---------- 扫码登录（Cookie 由 go-music-dl 落库，插件只做 UI 代理） ----------
+  qrSources: () => fetchAuth('./qr/sources'),
+  // 创建扫码会话；gmd 侧创建最坏可达 10s+，放宽网关超时到 60s
+  qrStart: (source) =>
+    fetchAuth('./qr/start', {
+      method: 'POST',
+      headers: { 'X-Plugin-Timeout-Ms': '60000' },
+      body: JSON.stringify({ source }),
+    }),
+  // 轮询扫码状态：{ status: waiting|scanned|success|expired|failed, message, cookie_saved }
+  qrPoll: (source, key) =>
+    fetchAuth(`./qr/poll?source=${encodeURIComponent(source)}&key=${encodeURIComponent(key)}`),
+  // ---------- 排行榜（仅 go-music-dl 后端有） ----------
+  toplists: (sources) =>
+    fetchAuth(
+      './toplists' + (sources && sources.length ? '?sources=' + sources.map(encodeURIComponent).join(',') : ''),
+    ),
+  toplistSongs: (source, id) =>
+    fetchAuth(
+      `./toplist_songs?source=${encodeURIComponent(source)}&id=${encodeURIComponent(id)}`,
+    ),
+  // ---------- 下载记录（已下载标记） ----------
+  downloadRecords: () => fetchAuth('./downloads/records'),
 }
 
 // 宿主歌单 API：经插件后端代理（/playlists...）调用，避免 common.js 的
