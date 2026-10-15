@@ -1,7 +1,14 @@
 // 配置模块纯函数测试（由 npm test 预先用 esbuild 转译到 tests/.gen/config.mjs）
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeConfig, hotPathSources, FAST_SOURCES, DEFAULT_SOURCES } from './.gen/config.mjs'
+import {
+  normalizeConfig,
+  hotPathSources,
+  FAST_SOURCES,
+  DEFAULT_SOURCES,
+  applyDefaultQuality,
+  QUALITY_LEVELS,
+} from './.gen/config.mjs'
 
 test('normalizeConfig：地址根化收口、basePath 默认/归一（save 后缓存与落盘一致）', () => {
   const c = normalizeConfig({ baseUrl: 'http://192.168.1.190:8080' })
@@ -91,4 +98,31 @@ test('hotPathSources：尊重用户关停某个快源', () => {
   const hot = hotPathSources(config)
   assert.ok(!hot.includes('qq'))
   assert.equal(hot.length, FAST_SOURCES.length - 1)
+})
+
+test('normalizeConfig：defaultQuality 白名单收口，非法/缺失回退 exhigh', () => {
+  assert.equal(normalizeConfig({}).defaultQuality, 'exhigh')
+  assert.equal(normalizeConfig({ defaultQuality: 'lossless' }).defaultQuality, 'lossless')
+  assert.equal(normalizeConfig({ defaultQuality: 'hires' }).defaultQuality, 'hires')
+  // 非法值（前端旧数据/手改存储）回退默认，不透传任意字符串到上游 extra.level
+  assert.equal(normalizeConfig({ defaultQuality: 'flac' }).defaultQuality, 'exhigh')
+  assert.equal(normalizeConfig({ defaultQuality: '' }).defaultQuality, 'exhigh')
+  assert.equal(normalizeConfig({ defaultQuality: null }).defaultQuality, 'exhigh')
+  // 白名单即前端下拉选项全集
+  assert.deepEqual([...QUALITY_LEVELS], ['standard', 'exhigh', 'lossless', 'hires'])
+})
+
+test('applyDefaultQuality：仅网易云注入，未显式带 level 才写默认音质', () => {
+  const config = normalizeConfig({ defaultQuality: 'lossless' })
+  // 网易云 + 无 extra → 注入 level
+  assert.deepEqual(applyDefaultQuality('netease', {}, config), { level: 'lossless' })
+  assert.deepEqual(applyDefaultQuality('netease', undefined, config), { level: 'lossless' })
+  // 网易云 + 已带 level（用户播放器内临时切换）→ 保留，不覆盖
+  assert.deepEqual(
+    applyDefaultQuality('netease', { level: 'standard', hash: 'x' }, config),
+    { level: 'standard', hash: 'x' },
+  )
+  // 非网易云 → 原样返回（extra 为空时返回空对象）
+  assert.deepEqual(applyDefaultQuality('qq', { m4a: '1' }, config), { m4a: '1' })
+  assert.deepEqual(applyDefaultQuality('qq', undefined, config), {})
 })

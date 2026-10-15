@@ -1,4 +1,5 @@
 import { GoMusicDlConfig, DEFAULT_SOURCES, normalizeBaseUrl } from './config'
+import { classifyLyricFormat, collapseKaraokeToLines } from './lyrics-format'
 
 export interface GoSong {
   id: string
@@ -415,8 +416,12 @@ export function buildInspectUrl(song: GoSong, baseUrl: string, basePath?: string
   )
 }
 
-/** 拉取歌词（LRC 纯文本），失败返回空串 */
-export async function fetchLyric(
+/**
+ * 拉取原始歌词（go-music-dl /music/download_lrc）。
+ * format=auto：上游 karaoke 逐字 LRC 原样返回，由调用方决定折叠（逐行）或
+ * 转换（lxlyric 逐字），一次请求同时服务两种形态；失败返回空串。
+ */
+export async function fetchLyricRaw(
   song: GoSong,
   config: GoMusicDlConfig,
   timeoutMs = 25000,
@@ -432,15 +437,31 @@ export async function fetchLyric(
     `&album=${encodeURIComponent(song.album)}` +
     `&duration=${song.duration}` +
     `&extra=${extra}` +
-    // 强制按「一行一个时间戳」返回，避免 go-music-dl 把 karaoke 多时间戳行
-    // 原样吐出；Songloft 全屏歌词按行解析会把每个时间戳拆成独立一行，
-    // 导致同一句歌词重复出现。format=line 由 go-music-dl 折叠为多时间戳→单行。
-    `&format=line`
+    // auto：保留上游 karaoke 多时间戳逐字格式（line 会把逐字信息折叠丢失）
+    `&format=auto`
   try {
     return await fetchText(url, timeoutMs)
   } catch {
     return ''
   }
+}
+
+/**
+ * 拉取歌词并保证返回「一行一个时间戳」的逐行 LRC，失败返回空串。
+ * 之前直接请求上游 format=line 由服务端折叠；现改为 auto 拉原始文本后本地折叠
+ * （lyrics-format.ts，语义对齐上游 lyricOriginalLineOnly），折叠实现单点化，
+ * 供 /lyric-search 等需要同时拿到逐字版的调用方复用同一份原始文本。
+ */
+export async function fetchLyric(
+  song: GoSong,
+  config: GoMusicDlConfig,
+  timeoutMs = 25000,
+): Promise<string> {
+  const raw = await fetchLyricRaw(song, config, timeoutMs)
+  if (!raw) return ''
+  return classifyLyricFormat(raw) === 'karaoke'
+    ? collapseKaraokeToLines(raw)
+    : raw
 }
 
 /**

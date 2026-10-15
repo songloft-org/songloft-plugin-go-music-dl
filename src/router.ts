@@ -5,15 +5,23 @@ import {
   parseQuery,
 } from '@songloft/plugin-sdk'
 import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
-import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources } from './config'
+import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources, applyDefaultQuality } from './config'
 import {
   searchSongs,
   searchSongsPage,
   searchCollectionsPage,
   buildDownloadUrl,
+  buildCoverProxyUrl,
   fetchLyric,
+  fetchLyricRaw,
   GoSong,
 } from './client'
+import { TTLCache } from './cache'
+import {
+  classifyLyricFormat,
+  collapseKaraokeToLines,
+  karaokeToLxLyric,
+} from './lyrics-format'
 import { encodeToken, decodeToken, loopbackToLan } from './bridge-contract'
 import { callHostApi } from './host'
 import {
@@ -32,7 +40,7 @@ import {
   listBindings,
 } from './sync'
 
-function toSearchItem(s: GoSong): SearchResultItem {
+function toSearchItem(s: GoSong, config?: GoMusicDlConfig): SearchResultItem {
   return {
     title: s.name,
     artist: s.artist || 'Unknown',
@@ -47,9 +55,62 @@ function toSearchItem(s: GoSong): SearchResultItem {
       album: s.album,
       duration: s.duration,
       cover: s.cover,
-      extra: s.extra,
+      extra: config ? applyDefaultQuality(s.source, s.extra, config) : s.extra,
     },
   }
+}
+
+// ---------- 进程内 TTL 缓存（插件被宿主空闲驱逐重载后随 VM 重建） ----------
+// 搜索类：上游单曲搜索是「全量搜完再内存切片」，相同关键词重复搜索/翻页代价高
+//   → 60s 短缓存（避免用户改源勾选后结果长时间陈旧；POST /config 时主动清空）。
+// 回搜命中（歌词/封面共用同一「按标题+歌手回搜」）：10min。
+// 歌词/封面结果：内容不变 → 24h。
+const searchCache = new TTLCache<SearchResultItem[]>(60_000, 100) // 宿主 L2 /api/search
+const pageSearchCache = new TTLCache<any>(60_000, 100) // 插件页 /search
+const toponeCache = new TTLCache<any>(60_000, 100) // topone（miot）
+const hitCache = new TTLCache<GoSong>(600_000, 100) // 回搜命中
+const lyricCache = new TTLCache<Record<string, string>>(86_400_000, 200) // lyric-search 结果
+const lyricProxyCache = new TTLCache<string>(86_400_000, 200) // /api/lyric（前端）
+const coverCache = new TTLCache<string>(86_400_000, 200) // cover-search 结果
+
+function clearCaches(): void {
+  searchCache.clear()
+  pageSearchCache.clear()
+  toponeCache.clear()
+  hitCache.clear()
+  lyricCache.clear()
+  lyricProxyCache.clear()
+  coverCache.clear()
+}
+
+/**
+ * 按「标题+歌手」回搜歌曲（歌词/封面提供者共用）。
+ * 宿主只传元数据无 source_data，需回搜后取词/封面；命中结果短期缓存，
+ * 同一首歌的歌词与封面回搜共享，第二次调用零上游开销。
+ */
+async function findHitByTitleArtist(
+  title: string,
+  artist: string,
+  config: GoMusicDlConfig,
+): Promise<GoSong | null> {
+  const hitKey = `hit|${title}|${artist}`
+  const cached = hitCache.get(hitKey)
+  if (cached) return cached
+  // 宿主歌词提供者预算 15s/提供者（manager.go SearchLyrics）：
+  // 搜索 8s + 取词 5s，源集收窄为快源子集，确保整套「回搜→取词」能在预算内完成
+  const songs = await searchSongs(
+    `${title} ${artist}`.trim(),
+    { ...config, sources: hotPathSources(config) },
+    1,
+    5,
+    8000,
+  )
+  const hit =
+    songs.find((s) => s.name.includes(title) || title.includes(s.name)) ||
+    songs[0] ||
+    null
+  if (hit) hitCache.set(hitKey, hit)
+  return hit
 }
 
 // Uint8Array → string：String.fromCharCode.apply 展开大数组会超出 QuickJS 的
@@ -98,6 +159,8 @@ router.post('/config', async (req: HTTPRequest) => {
   const config = await getConfig()
   const newConfig = { ...config, ...data }
   await saveConfig(newConfig)
+  // 配置变化（地址/音源/音质）会使已缓存结果的输入失效，全部清空
+  clearCaches()
   return jsonResponse({ success: true, config: newConfig })
 })
 
@@ -108,6 +171,9 @@ router.post('/config', async (req: HTTPRequest) => {
 router.post('/api/search', createSearchHandler({
   search: async (keyword: string, page = 1, pageSize = 20) => {
     const config = await getConfig()
+    const cacheKey = `${keyword}|${page}|${pageSize}`
+    const cached = searchCache.get(cacheKey)
+    if (cached) return cached
     const songs = await searchSongs(
       keyword,
       { ...config, sources: hotPathSources(config) },
@@ -115,7 +181,9 @@ router.post('/api/search', createSearchHandler({
       pageSize,
       4000,
     )
-    return songs.map(toSearchItem)
+    const items = songs.map((s) => toSearchItem(s, config))
+    searchCache.set(cacheKey, items)
+    return items
   },
 }))
 
@@ -155,7 +223,12 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
         album: String(song.album || ''),
         cover: String(song.cover || ''),
         duration: Number(song.duration) || 0,
-        extra: (song.extra as Record<string, any>) || {},
+        // 网易云且未显式带 level 时注入默认音质（覆盖导入时未带品质的存量歌曲）
+        extra: applyDefaultQuality(
+          String(song.source || ''),
+          song.extra as Record<string, any>,
+          config,
+        ),
       },
       config.baseUrl,
       config.basePath,
@@ -304,7 +377,11 @@ router.get('/stream/:token', async (req: HTTPRequest, params: any) => {
         album: String(song.album || ''),
         cover: String(song.cover || ''),
         duration: Number(song.duration) || 0,
-        extra: (song.extra as Record<string, any>) || {},
+        extra: applyDefaultQuality(
+          String(song.source || ''),
+          song.extra as Record<string, any>,
+          config,
+        ),
       },
       baseUrl,
       config.basePath,
@@ -376,6 +453,9 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
   if (!keyword) {
     return jsonResponse({ code: 1, msg: 'empty keyword', data: null })
   }
+  const cacheKey = `topone|${keyword}`
+  const cached = toponeCache.get(cacheKey)
+  if (cached) return jsonResponse(cached)
   try {
     const config = await getConfig()
     // miot 侧 external_search_timeout 默认仅 6s：源集收窄为快源子集（对齐上游
@@ -396,7 +476,7 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
     // 返回指向本插件 /stream/:token 的对外直链（音箱可直连）；
     // 推导失败时返回 null → url 置空 → miot 回退入库播放。
     const directUrl = await makeDirectStreamUrl(s)
-    return jsonResponse({
+    const payload = {
       code: 0,
       msg: 'ok',
       data: {
@@ -415,11 +495,13 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
           album: s.album,
           duration: s.duration,
           cover: s.cover,
-          extra: s.extra,
+          extra: applyDefaultQuality(s.source, s.extra, config),
         },
         dedup_key: `go-music-dl_${s.source}_${s.id}`,
       },
-    })
+    }
+    toponeCache.set(cacheKey, payload)
+    return jsonResponse(payload)
   } catch (e) {
     return jsonResponse({
       code: 1,
@@ -430,31 +512,68 @@ router.post('/api/search/topone', async (req: HTTPRequest) => {
 })
 
 // 歌词提供者端点：宿主在歌曲无歌词时调用 GET /lyric-search?title=&artist=&album=&duration=
+// 返回 LyricPayload 兼容形态：{ lyric, lxlyric? }（宿主 internal/models/lyric.go，
+// lxlyric 为逐字歌词，宿主全屏渲染优先消费；未命中返回 { lyric: '' }）。
 router.get('/lyric-search', async (req: HTTPRequest) => {
   const config = await getConfig()
   const q = parseQuery(req.query)
   const title = q.title || ''
   const artist = q.artist || ''
+  const album = q.album || ''
+  const duration = Number(q.duration) || 0
+  const empty = { lyric: '' }
   try {
-    // 宿主歌词提供者预算 15s/提供者（manager.go SearchLyrics）：搜索 8s + 取词 5s，
-    // 源集收窄为快源子集，确保整套「回搜→取词」能在预算内完成。
+    const key = `lyric|${title}|${artist}|${album}|${duration}`
+    const cached = lyricCache.get(key)
+    if (cached) return jsonResponse(cached)
     // 宿主仅提供元数据，无 source_data，需按标题+歌手回搜再取歌词
-    const songs = await searchSongs(
-      `${title} ${artist}`.trim(),
-      { ...config, sources: hotPathSources(config) },
-      1,
-      5,
-      8000,
-    )
-    const hit =
-      songs.find(
-        (s) => s.name.includes(title) || title.includes(s.name),
-      ) || songs[0]
-    if (!hit) return jsonResponse({ lyric: '' })
-    const lyric = await fetchLyric(hit, config, 5000)
-    return jsonResponse({ lyric: lyric || '' })
+    const hit = await findHitByTitleArtist(title, artist, config)
+    if (!hit) {
+      lyricCache.set(key, empty)
+      return jsonResponse(empty)
+    }
+    // 一次请求拿原始文本（format=auto 保留 karaoke 逐字格式）：
+    // lyric 字段用折叠后的逐行版（宿主逐行渲染会把多时间戳行拆成重复行），
+    // karaoke 时另给 lxlyric 逐字版（宿主绝对单尖括号格式，见 lyrics-format.ts）。
+    const raw = await fetchLyricRaw(hit, config, 5000)
+    if (!raw) {
+      lyricCache.set(key, empty)
+      return jsonResponse(empty)
+    }
+    const payload: Record<string, string> =
+      classifyLyricFormat(raw) === 'karaoke'
+        ? { lyric: collapseKaraokeToLines(raw), lxlyric: karaokeToLxLyric(raw) }
+        : { lyric: raw }
+    lyricCache.set(key, payload)
+    return jsonResponse(payload)
   } catch (e) {
-    return jsonResponse({ lyric: '' })
+    return jsonResponse(empty)
+  }
+})
+
+// 封面提供者端点：宿主对无封面歌曲调用 GET /cover-search?title=&artist=&album=
+// （songloft.covers.registerProvider，宿主多提供者取第一个非空 cover_url）。
+// 与歌词共用「回搜命中」缓存：同一首歌先查过歌词时，封面回搜零上游开销。
+// 返回经 go-music-dl cover_proxy 包装的地址，规避平台封面防盗链 403。
+router.get('/cover-search', async (req: HTTPRequest) => {
+  const config = await getConfig()
+  const q = parseQuery(req.query)
+  const title = q.title || ''
+  const artist = q.artist || ''
+  try {
+    const key = `cover|${title}|${artist}|${q.album || ''}`
+    const cached = coverCache.get(key)
+    if (cached !== undefined) return jsonResponse({ cover_url: cached })
+    const hit = await findHitByTitleArtist(title, artist, config)
+    const coverUrl =
+      hit && hit.cover
+        ? buildCoverProxyUrl(hit.cover, config.baseUrl, config.basePath)
+        : ''
+    // 空结果也缓存：无封面歌曲反复触发回搜只会白耗上游
+    coverCache.set(key, coverUrl)
+    return jsonResponse({ cover_url: coverUrl })
+  } catch (e) {
+    return jsonResponse({ cover_url: '' })
   }
 })
 
@@ -482,9 +601,14 @@ router.get('/api/lyric', async (req: HTTPRequest) => {
     duration: Number(q.duration) || 0,
     extra,
   }
+  // extra 参与缓存 key：上游部分平台（如 kugou）取词依赖 extra 里的歌曲指纹字段
+  const cacheKey = `proxy|${id}|${source}|${song.name}|${song.artist}|${song.album}|${song.duration}|${q.extra || ''}`
+  const cached = lyricProxyCache.get(cacheKey)
+  if (cached !== undefined) return jsonResponse({ lyric: cached })
   try {
     // 前端经网关调用（默认 30s），给 20s 上游预算留响应余量
     const lyric = await fetchLyric(song, config, 20000)
+    lyricProxyCache.set(cacheKey, lyric || '')
     return jsonResponse({ lyric: lyric || '' })
   } catch {
     return jsonResponse({ lyric: '' })
@@ -512,10 +636,14 @@ router.get('/search', async (req: HTTPRequest) => {
   if (!keyword) {
     return jsonResponse({ type, items: [], pagination: emptyPagination })
   }
+  // 上游分页是「全量搜索后内存切片」，翻页=全量重搜；60s 内同关键词翻页直接复用
+  const pageKey = `page|${type}|${keyword}|${page}`
+  const cached = pageSearchCache.get(pageKey)
+  if (cached) return jsonResponse(cached)
   try {
     if (type === 'song') {
       const { items, pagination } = await searchSongsPage(keyword, config, page)
-      return jsonResponse({
+      const payload = {
         type,
         items: items.map((s) => ({
           id: s.id,
@@ -528,7 +656,9 @@ router.get('/search', async (req: HTTPRequest) => {
           extra: s.extra,
         })),
         pagination,
-      })
+      }
+      pageSearchCache.set(pageKey, payload)
+      return jsonResponse(payload)
     }
     const { items, pagination } = await searchCollectionsPage(
       keyword,
@@ -536,7 +666,7 @@ router.get('/search', async (req: HTTPRequest) => {
       type,
       page,
     )
-    return jsonResponse({
+    const payload = {
       type,
       items: items.map((c) => ({
         id: c.id,
@@ -548,7 +678,9 @@ router.get('/search', async (req: HTTPRequest) => {
         contentType: c.contentType,
       })),
       pagination,
-    })
+    }
+    pageSearchCache.set(pageKey, payload)
+    return jsonResponse(payload)
   } catch (e) {
     return jsonResponse(
       { error: String((e as Error)?.message || e) },

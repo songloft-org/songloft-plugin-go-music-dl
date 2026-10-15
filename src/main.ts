@@ -40,6 +40,20 @@ async function onInit(): Promise<void> {
       String(e),
     )
   }
+  // 封面提供者：宿主对无封面歌曲调 GET /cover-search 取补全封面。
+  // 旧宿主无 covers 命名空间时静默跳过，不影响其他功能。
+  try {
+    const covers = (globalThis as any).songloft?.covers
+    if (covers && typeof covers.registerProvider === 'function') {
+      covers.registerProvider()
+      console.log('[Go Music DL Plugin] registered as cover provider')
+    }
+  } catch (e) {
+    console.error(
+      '[Go Music DL Plugin] failed to register cover provider',
+      String(e),
+    )
+  }
   registerSearchProviderToMiot()
 
   // 自 v2026.8.9 起移除了 comm.onMessage('resolve-stream-url') 注册：
@@ -51,6 +65,14 @@ async function onInit(): Promise<void> {
 async function onDeinit(): Promise<void> {
   try {
     ;(globalThis as any).songloft.lyrics.unregisterProvider()
+  } catch {
+    /* ignore */
+  }
+  try {
+    const covers = (globalThis as any).songloft?.covers
+    if (covers && typeof covers.unregisterProvider === 'function') {
+      covers.unregisterProvider()
+    }
   } catch {
     /* ignore */
   }

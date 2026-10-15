@@ -16,7 +16,15 @@ export interface GoMusicDlConfig {
   serverHost?: string
   /** 参与搜索的音源列表 */
   sources: string[]
+  /** 默认音质档位：standard(128) / exhigh(320) / lossless(FLAC) / hires(Hi-Res)。
+   *  仅网易云消费（写入 extra.level，上游据此取链），其他音源忽略。
+   *  前端设置页保存时即携带该字段，后端归一化收口并在取流/搜索出口统一注入。 */
+  defaultQuality?: string
 }
+
+/** 合法音质档位（对齐前端设置页下拉选项 static/index.html #configDefaultQuality） */
+export const QUALITY_LEVELS = ['standard', 'exhigh', 'lossless', 'hires'] as const
+export const DEFAULT_QUALITY: (typeof QUALITY_LEVELS)[number] = 'exhigh'
 
 const CONFIG_KEY = 'gomusicdl_config'
 
@@ -47,6 +55,7 @@ const DEFAULT_CONFIG: GoMusicDlConfig = {
   basePath: DEFAULT_BASE_PATH,
   externalBaseUrl: '',
   sources: [...DEFAULT_SOURCES],
+  defaultQuality: DEFAULT_QUALITY,
 }
 
 /**
@@ -101,7 +110,30 @@ export function normalizeConfig(raw: Partial<GoMusicDlConfig>): GoMusicDlConfig 
   } else {
     parsed.serverHost = ''
   }
+  // 默认音质：白名单收口，非法/缺失回退默认（与前端下拉一致，避免任意值流入上游 extra.level）
+  parsed.defaultQuality = (QUALITY_LEVELS as readonly string[]).includes(
+    String(parsed.defaultQuality || ''),
+  )
+    ? String(parsed.defaultQuality)
+    : DEFAULT_QUALITY
   return parsed
+}
+
+/**
+ * 把默认音质注入网易云歌曲的 extra.level（上游据此取链：standard/exhigh/lossless/hires）。
+ * 仅在 extra 未显式带 level 时注入（尊重歌曲自带/用户临时切换的档位）；
+ * 其他音源原样返回（上游忽略 level 字段，注入无害但不必要，直接跳过更省序列化体积）。
+ */
+export function applyDefaultQuality(
+  source: string,
+  extra: Record<string, any> | undefined,
+  config: GoMusicDlConfig,
+): Record<string, any> {
+  const src = String(source || '')
+  if (src !== 'netease') return extra || {}
+  const quality = config.defaultQuality || DEFAULT_QUALITY
+  if (extra && extra.level) return extra
+  return { ...(extra || {}), level: quality }
 }
 
 // 宿主 songloft.storage 无缓存（每 key 一个文件、每次 get 都是异步 bridge 往返 +

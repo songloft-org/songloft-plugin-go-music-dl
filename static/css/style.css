@@ -27,7 +27,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* GD Studio 插件样式：CSS 变量、reset、body 和字体由主程序 common.css 提供 */
+/* 插件样式：CSS 变量、reset、body 和字体由主程序 common.css 提供 */
 
 /* AppBar */
 .app-bar {
