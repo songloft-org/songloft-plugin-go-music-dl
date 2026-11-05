@@ -5,7 +5,8 @@ import {
   parseQuery,
 } from '@songloft/plugin-sdk'
 import type { HTTPRequest, SearchResultItem } from '@songloft/plugin-sdk'
-import { getConfig, saveConfig, GoMusicDlConfig, hotPathSources, applyDefaultQuality, isApiBackend } from './config'
+import { getConfig, saveConfig, normalizeConfig, GoMusicDlConfig, hotPathSources, applyDefaultQuality, isApiBackend } from './config'
+import { bodyToString, parseBody } from './http-body'
 import {
   searchSongs,
   searchSongsPage,
@@ -150,32 +151,13 @@ async function findHitByTitleArtist(
   return pending
 }
 
-// Uint8Array → string：String.fromCharCode.apply 展开大数组会超出 QuickJS 的
-// 参数上限（/import/batch 的 body 可达几十 KB，直接 apply 会抛错导致整批 500），
-// 逐 8KB 块拼接规避。
-function bytesToString(bytes: Uint8Array): string {
-  let out = ''
-  const CHUNK = 8192
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    out += String.fromCharCode.apply(
-      null,
-      Array.from(bytes.subarray(i, i + CHUNK)) as unknown as number[],
-    )
-  }
-  return out
-}
-
-function parseBody(req: HTTPRequest): any {
-  if (!req.body) return {}
-  try {
-    const str =
-      typeof req.body === 'string'
-        ? req.body
-        : bytesToString(req.body as Uint8Array)
-    return JSON.parse(str)
-  } catch {
-    return {}
-  }
+// 宿主歌单接口默认分页 20，代理时统一覆盖 limit 拉全量。
+// 用 set 而非字符串追加：query 里若已带 limit，追加的同名参数不会生效（宿主取首个），
+// 强制放大失效会让同步 diff 误判「已有歌为新增」。
+function withLimit(query: string | undefined, limit: number): string {
+  const params = new URLSearchParams(query || '')
+  params.set('limit', String(limit))
+  return params.toString()
 }
 
 interface DownloadRequest {
@@ -200,7 +182,9 @@ router.post('/config', async (req: HTTPRequest) => {
   // gmd session 缓存一并失效（凭据可能已更换，避免沿用旧会话）
   clearCaches()
   await clearCachedSession()
-  return jsonResponse({ success: true, config: newConfig })
+  // 与 saveConfig 落盘的归一化结果保持一致（地址根化、枚举白名单、旧数据迁移），
+  // 否则 UI 显示值与下次启动读到的配置会分叉。
+  return jsonResponse({ success: true, config: normalizeConfig(newConfig) })
 })
 
 // 全局搜索（Songloft 主程序调用）。
@@ -232,8 +216,7 @@ router.post('/api/music/url', async (req: HTTPRequest) => {
   let body: Record<string, unknown> = {}
   if (req.body) {
     try {
-      body =
-        typeof req.body === 'string' ? JSON.parse(req.body) : {}
+      body = JSON.parse(bodyToString(req))
     } catch {
       return jsonResponse({ error: 'invalid json body' }, 400)
     }
@@ -538,11 +521,13 @@ router.get('/lyric-search', async (req: HTTPRequest) => {
   const album = q.album || ''
   const duration = Number(q.duration) || 0
   const empty = { lyric: '' }
+  // key 在 catch 里要复用于失败短缓存，故声明在 try 外，保证读写是同一个键
+  const key = `lyric|${title}|${artist}|${album}|${duration}`
   try {
-    const key = `lyric|${title}|${artist}|${album}|${duration}`
     const cached = lyricCache.get(key)
     if (cached) return jsonResponse(cached)
-    if (searchFailCache.get(`lyric|${key}`)) return jsonResponse(empty)
+    // 读写必须用同一个 key：key 本身已含 `lyric|` 前缀，再加前缀会导致短缓存永不命中
+    if (searchFailCache.get(key)) return jsonResponse(empty)
     // 宿主仅提供元数据，无 source_data，需按标题+歌手回搜再取歌词
     const hit = await findHitByTitleArtist(title, artist, config)
     if (!hit) {
@@ -565,7 +550,7 @@ router.get('/lyric-search', async (req: HTTPRequest) => {
     return jsonResponse(payload)
   } catch (e) {
     // 网络错误/上游异常：短缓存失败结果（60s），避免上游故障期间反复回搜
-    searchFailCache.set(`lyric|${title}|${artist}|${album}|${duration}`, true)
+    searchFailCache.set(key, true)
     return jsonResponse(empty)
   }
 })
@@ -579,11 +564,12 @@ router.get('/cover-search', async (req: HTTPRequest) => {
   const q = parseQuery(req.query)
   const title = q.title || ''
   const artist = q.artist || ''
+  // 同歌词端点：key 提到 try 外，读写失败短缓存用同一个键
+  const key = `cover|${title}|${artist}|${q.album || ''}`
   try {
-    const key = `cover|${title}|${artist}|${q.album || ''}`
     const cached = coverCache.get(key)
     if (cached !== undefined) return jsonResponse({ cover_url: cached })
-    if (searchFailCache.get(`cover|${key}`)) return jsonResponse({ cover_url: '' })
+    if (searchFailCache.get(key)) return jsonResponse({ cover_url: '' })
     const hit = await findHitByTitleArtist(title, artist, config)
     const coverUrl =
       hit && hit.cover
@@ -594,7 +580,7 @@ router.get('/cover-search', async (req: HTTPRequest) => {
     return jsonResponse({ cover_url: coverUrl })
   } catch (e) {
     // 网络错误/上游异常：短缓存失败结果（60s）
-    searchFailCache.set(`cover|${title}|${artist}|${q.album || ''}`, true)
+    searchFailCache.set(key, true)
     return jsonResponse({ cover_url: '' })
   }
 })
@@ -733,13 +719,21 @@ router.post('/import', async (req: HTTPRequest) => {
       )
     }
     const song = await importRemoteSong(body.item)
-    const currentSong = await (globalThis as any).songloft.songs.getById(
-      song.id,
-    )
+    // already_local 只是附加信息：老宿主未桥接 songs.getById 时降级为 false，
+    // 不能让写入已成功的导入整体返回 500（前端会误报「导入失败」并重复导入）。
+    let alreadyLocal = false
+    try {
+      const currentSong = await (globalThis as any).songloft.songs.getById(
+        song.id,
+      )
+      alreadyLocal = currentSong?.type === 'local'
+    } catch {
+      /* 附加字段查询失败不影响导入结果 */
+    }
     return jsonResponse({
       success: true,
       song,
-      already_local: currentSong?.type === 'local',
+      already_local: alreadyLocal,
     })
   } catch (e) {
     return jsonResponse(
@@ -793,7 +787,7 @@ router.post('/import/batch', async (req: HTTPRequest) => {
           if (r.item) okItems.push(r.item)
           else
             failed.push({
-              name: items[idx].name || '',
+              name: items[idx]?.name || '',
               reason: r.reason || 'unknown',
             })
         })
@@ -832,7 +826,7 @@ router.post('/import/batch', async (req: HTTPRequest) => {
 // 否则列表里"后面的歌单不显示"。
 router.get('/playlists', async (req: HTTPRequest) => {
   try {
-    const query = req.query ? `${req.query}&limit=1000` : 'limit=1000'
+    const query = withLimit(req.query, 1000)
     const result = await callHostApi('GET', `/api/v1/playlists?${query}`)
     return jsonResponse(result)
   } catch (e) {
@@ -851,6 +845,10 @@ router.post('/playlists', async (req: HTTPRequest) => {
 })
 
 router.post('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
+  // 与 GET 分支一致的 id 校验：id 会拼进带 pluginToken 的宿主 URL，不能放任任意路径片段
+  if (!params.id || !/^\d+$/.test(params.id)) {
+    return jsonResponse({ error: '无效的歌单 id' }, 400)
+  }
   try {
     const data = parseBody(req)
     const result = await callHostApi(
@@ -1168,7 +1166,7 @@ router.get('/playlists/:id/songs', async (req: HTTPRequest, params: any) => {
     if (!params.id || !/^\d+$/.test(params.id)) {
       return jsonResponse({ error: '无效的歌单 id' }, 400)
     }
-    const query = req.query ? `${req.query}&limit=10000` : 'limit=10000'
+    const query = withLimit(req.query, 10000)
     const result = await callHostApi(
       'GET',
       `/api/v1/playlists/${params.id}/songs?${query}`,

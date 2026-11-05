@@ -165,7 +165,7 @@ export function renderSong(s, index, opts = {}) {
   card.innerHTML = `
     ${checkHtml}
     <div class="song-index">${number}</div>
-    <img src="${cover}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
+    <img src="${escapeHtml(cover)}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
     <div class="song-meta">
       <div class="song-title">${escapeHtml(s.name)}</div>
       <div class="song-sub">${escapeHtml(s.artist)} · ${escapeHtml(s.album || '')} · ${escapeHtml(sourceLabel(s.source))}</div>

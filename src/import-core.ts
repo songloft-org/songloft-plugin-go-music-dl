@@ -69,9 +69,10 @@ export async function probeDownloadable(
   // 超时兜底：X-Fetch-Timeout-Ms=6000（inspect 上游自带 5s client 超时，6s 是余量）
   // + QuickJS 侧 8s Promise.race 双保险。宿主 fetch 默认 30s，不设头时批量探测
   // 最坏要把整批预算耗在卡死的 inspect 上。
-  const timeout = new Promise<'unknown'>((resolve) =>
-    setTimeout(() => resolve('unknown'), 8000),
-  )
+  let timer: any = null
+  const timeout = new Promise<'unknown'>((resolve) => {
+    timer = setTimeout(() => resolve('unknown'), 8000)
+  })
   try {
     const res: any = await Promise.race([
       fetch(url, {
@@ -91,6 +92,9 @@ export async function probeDownloadable(
     return j.valid ? 'ok' : 'dead'
   } catch {
     return 'unknown'
+  } finally {
+    // 探测正常返回时取消 8s 兜底定时器，避免每首歌都留一个活跃 timer
+    if (timer !== null) clearTimeout(timer)
   }
 }
 

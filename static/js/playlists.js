@@ -166,7 +166,7 @@ export function renderPlaylistRow(pl) {
   const tag = escapeHtml(sourceLabel(tagText) || tagText)
   card.innerHTML = `
     <div class="playlist-cover">
-      <img src="${cover}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_COVER}'">
+      <img src="${escapeHtml(cover)}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_COVER}'">
       ${tag ? `<span class="playlist-source-tag">${tag}</span>` : ''}
     </div>
     <div class="playlist-meta">

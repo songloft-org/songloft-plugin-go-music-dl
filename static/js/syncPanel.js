@@ -215,7 +215,7 @@ function renderList() {
     const cover = buildCoverUrl(it.cover) || PLUGIN_ICON
     row.innerHTML = `
       <input type="checkbox" ${it.checked ? 'checked' : ''} ${syncing ? 'disabled' : ''}>
-      <img class="sync-cover" src="${cover}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_COVER}'">
+      <img class="sync-cover" src="${escapeHtml(cover)}" referrerpolicy="no-referrer" onerror="this.onerror=null; this.src='${FALLBACK_COVER}'">
       <div class="sync-meta">
         <div class="sync-title">${escapeHtml(it.name || '未命名歌单')}</div>
         <div class="sync-sub" data-role="sub">${bindingLine(it)}</div>
