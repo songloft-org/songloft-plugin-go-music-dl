@@ -54,7 +54,7 @@ test('mapApiPlaylist：api model.Playlist → GoCollection（name→title、trac
   assert.equal(a.contentType, 'album')
 })
 
-test('slicePage：内存切片分页（对齐 API_PAGE_SIZE）', () => {
+test('slicePage：api 模式内存切片分页（页大小独立于上游 WebPageSize）', () => {
   assert.equal(API_PAGE_SIZE, 200)
   const items = Array.from({ length: 450 }, (_, i) => i)
   const p1 = slicePage(items, 1)

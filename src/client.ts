@@ -1,4 +1,4 @@
-import { GoMusicDlConfig, DEFAULT_SOURCES, normalizeBaseUrl, isApiBackend } from './config'
+import { GoMusicDlConfig, DEFAULT_SOURCES, normalizeBaseUrl, rootBaseUrl, isApiBackend } from './config'
 import { classifyLyricFormat, collapseKaraokeToLines } from './lyrics-format'
 
 export interface GoSong {
@@ -12,6 +12,25 @@ export interface GoSong {
   extra: Record<string, any>
 }
 
+/** 数字实体 → 字符；非法码点或运行时不支持时原样保留，避免整段解析抛错。 */
+function decodeNumericEntity(raw: string, digits: string, radix: number): string {
+  const cp = parseInt(digits, radix)
+  if (!Number.isFinite(cp) || cp < 0 || cp > 0x10ffff) return raw
+  try {
+    return String.fromCodePoint(cp)
+  } catch {
+    return raw
+  }
+}
+
+/**
+ * 反转义上游 HTML/属性里的实体。
+ * 必须覆盖数字实体：Go html/template 会把 URL 里的 `+` 转义成 `&#43;`，
+ * 若不解，残留的 `#` 会被 new URL() 当成 fragment 起点，把其后的
+ * `&source=...&toplist_id=...` 全部吞掉，导致榜单卡片被误判为「无 ID」而丢弃。
+ * 数字实体放在最后解码，保证 `&amp;#43;` 这类双重转义也能正确还原，
+ * 且不会再被前面的具名规则二次处理。
+ */
 function unescapeHtml(s: string): string {
   return s
     .replace(/&amp;/g, '&')
@@ -20,6 +39,8 @@ function unescapeHtml(s: string): string {
     .replace(/&#34;/g, '"')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
+    .replace(/&#(\d+);/g, (raw, d: string) => decodeNumericEntity(raw, d, 10))
+    .replace(/&#x([0-9a-fA-F]+);/g, (raw, d: string) => decodeNumericEntity(raw, d, 16))
 }
 
 function getAttr(attrs: string, key: string): string {
@@ -98,8 +119,9 @@ async function fetchText(url: string, timeoutMs = 25000): Promise<string> {
     }
     if (res.status === 404) {
       throw new Error(
-        'go-music-dl 接口不存在 (404)：请确认服务地址与 Base Path 配置正确' +
-          '（插件按 Base Path 拼接前缀，默认 /music；上游 --base-path 改过时需同步填写）。',
+        '上游接口不存在 (404)：请检查服务地址、Base Path 与「后端类型」是否匹配' +
+          '（gmd 默认挂载 /music，--base-path 改过需同步填写；go-music-api 的 /api/v1/* 在根路径下）。' +
+          '也可能是该端点在此上游版本中不存在。',
       )
     }
     throw new Error(`go-music-dl 请求失败: HTTP ${res.status}`)
@@ -139,10 +161,15 @@ export type SearchType = 'song' | 'playlist' | 'album'
 
 // ---------- go-music-api（纯 JSON REST）分流层 ----------
 // 上游 go-music-api 与 go-music-dl 共用 music-lib，能力一致但端点/返回形态不同：
-// api 是 {code,msg,data} 信封的纯 JSON（搜索全量返回、无分页参数），插件层内存切片
-// 对齐 gmd 的 WebPageSize（默认 200）翻页语义。取流端点两侧参数一致（songFromQuery）。
+// api 是 {code,msg,data} 信封的纯 JSON（搜索全量返回、无分页参数），插件层内存切片。
+// 取流端点两侧参数一致（songFromQuery）。
 
-/** api 模式搜索全量返回后的客户端分页大小（对齐 gmd core.DefaultWebPageSize） */
+/**
+ * api 模式「全量结果内存切片」的每页条数。
+ * 与 gmd 的 core.DefaultWebPageSize（上游当前为 50）**无关**：gmd 模式由服务端
+ * HTML 分页摘要决定页码，api 模式每次翻页都要重新拉一次全量结果，故刻意取更大
+ * 值以减少翻页请求数。若上游 WebPageSize 变化，此处无需同步。
+ */
 export const API_PAGE_SIZE = 200
 
 /** GET {base}/api/v1{path}，解开 {code,msg,data} 信封；code!==200 抛可读错误 */
@@ -151,7 +178,8 @@ async function fetchApiJson(
   path: string,
   timeoutMs = 25000,
 ): Promise<any> {
-  const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  // go-music-api 的 /api/v1/* 在根路径下，不能拼 --base-path 网页前缀
+  const base = rootBaseUrl(config.baseUrl)
   const url = `${base}/api/v1${path}`
   const text = await fetchText(url, timeoutMs)
   let payload: any
@@ -266,7 +294,7 @@ async function fetchSearchHtml(
     `page=${page}`,
   ]
   // go-music-dl 认的是 page_size（不是 count）。仅当显式给定正数时才传，
-  // 传 0 则不带该参数，让服务端使用其 WebPageSize 设置（默认 200，见上游
+  // 传 0 则不带该参数，让服务端使用其 WebPageSize 设置（默认 50，见上游
   // core.DefaultWebPageSize；实例可在设置页改小），使插件搜索页每页条数与
   // go-music-dl 网页端保持一致。注意：上游分页是「全量搜索后内存切片」，
   // 翻页会触发全量重搜，page_size 越大翻页次数越少。
@@ -554,7 +582,7 @@ export function buildInspectUrl(
   basePath?: string,
   apiMode = false,
 ): string {
-  const base = normalizeBaseUrl(baseUrl, basePath)
+  const base = apiMode ? rootBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl, basePath)
   if (!base) return ''
   if (apiMode) {
     // api 模式 inspect 只收 id/source/duration（无 extra，码率估算能力一致）
@@ -690,7 +718,7 @@ export function buildCoverProxyUrl(
 ): string {
   if (!rawCover) return ''
   if (/^(data:|blob:)/i.test(rawCover)) return rawCover
-  const base = normalizeBaseUrl(baseUrl, basePath)
+  const base = apiMode ? rootBaseUrl(baseUrl) : normalizeBaseUrl(baseUrl, basePath)
   if (!base) return rawCover
   if (rawCover.startsWith(base)) return rawCover // 已是本实例代理地址
   // api 模式无 /cover_proxy，走 /api/v1/music/cover（同为图片代理）
@@ -710,20 +738,24 @@ export interface GoTopList {
   cover: string
   description: string
   trackCount: number
+  /** [C] 上游卡片里已格式化的「平台累计收听量」文本（如「65.2亿」），无则空串。
+   *  仅 netease/qq/kugou 三源提供、非本插件统计、约 10 分钟更新。
+   *  决定移除 C 时：删此字段 + 下面提取逻辑 + discover.js 的 playText/角标插值
+   *  + index.html 的 .playlist-play-tag 样式 + tests/backend.test.mjs 两个断言。 */
+  playCountText: string
 }
 
 /**
  * 解析 /toplists 页面中的榜单卡片。
- * 上游卡片（partials/toplists.html）形如：
- *   <a class="toplist-card" href="{root}/toplist_songs?source=..&toplist_id=..&toplist_name=..
- *      &update_frequency=..&cover=..&description=..&track_count=.." title="...">
- * 全部字段都在 href 的 query 里，正则取 href 后解码即可，不依赖卡片内部 DOM 结构。
+ * 主字段都在 href 的 query 里；[C] 播放量只以文本出现在卡片正文的耳机图标 span
+ * （上游 partials/toplists.html:61 用 %.1f亿 格式化，URL 不带该值），
+ * 所以正则要匹配整块 <a>...</a> 而非仅开始标签。
  */
 export function parseTopListCards(html: string): GoTopList[] {
   const out: GoTopList[] = []
   const seen = new Set<string>()
   const re =
-    /<a\s+class="toplist-card"\s+href="([^"]+)"[^>]*>/g
+    /<a\s+class="toplist-card"\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(html))) {
     let url: URL
@@ -738,6 +770,9 @@ export function parseTopListCards(html: string): GoTopList[] {
     const key = `${source}__${id}`
     if (!source || seen.has(key)) continue
     seen.add(key)
+    // [C] <i class="fa-solid fa-headphones"></i> 65.1亿
+    const playMatch =
+      /<i[^>]*fa-headphones[^>]*>\s*<\/i>\s*([^<]+?)\s*<\/span>/.exec(m[2] || '')
     out.push({
       source,
       name: unescapeHtml(url.searchParams.get('toplist_name') || id),
@@ -746,6 +781,7 @@ export function parseTopListCards(html: string): GoTopList[] {
       cover: unescapeHtml(url.searchParams.get('cover') || ''),
       description: unescapeHtml(url.searchParams.get('description') || ''),
       trackCount: Number(url.searchParams.get('track_count')) || 0,
+      playCountText: playMatch ? unescapeHtml(playMatch[1].trim()) : '',
     })
   }
   return out
@@ -771,11 +807,23 @@ export async function fetchTopListSongs(
   timeoutMs = 25000,
 ): Promise<GoSong[]> {
   const base = normalizeBaseUrl(config.baseUrl, config.basePath)
+  // 上游 renderIndex 按 page_size 内存切片（默认 WebPageSize=50、上限 500，
+  // internal/web/server.go:406-455）。不传就只回前 50 首，大榜会静默丢歌。
   const url =
     `${base}/toplist_songs` +
     `?source=${encodeURIComponent(topList.source)}` +
-    `&toplist_id=${encodeURIComponent(topList.id)}`
+    `&toplist_id=${encodeURIComponent(topList.id)}` +
+    `&page_size=500`
   const html = await fetchText(url, timeoutMs)
+  const pagination = parsePagination(html)
+  if (pagination.inferred && pagination.totalPages > 1) {
+    // 极端大榜（>500 首）仍会被上游截断：只提示，不自动翻页——每次请求都会让
+    // 上游重新拉一次第三方榜单，翻页代价高且容易触发宿主网关超时。
+    console.log(
+      `[toplist] ${topList.source}/${topList.id} 共 ${pagination.total} 首，` +
+        '上游单次上限 500，可能未取全',
+    )
+  }
   return parseSongCards(html)
 }
 

@@ -4,8 +4,9 @@ import { API, testConnection, friendlyError, isExternalAccess } from './api.js'
 import { showSnackbar } from './util.js'
 
 export async function loadConfig() {
+  let raw = {}
   try {
-    const raw = await API.config()
+    raw = (await API.config()) || {}
     store.config = { ...store.config, ...raw }
   } catch {
     /* 使用默认值 */
@@ -32,7 +33,11 @@ export async function loadConfig() {
   const guEl = document.getElementById('configGmdAuthUser')
   if (guEl) guEl.value = store.config.gmdAuthUser || ''
   const gpEl = document.getElementById('configGmdAuthPass')
-  if (gpEl) gpEl.value = store.config.gmdAuthPass || ''
+  if (gpEl) {
+    // 后端不再回显已保存口令：留空 = 保持不变，填新值才覆盖
+    gpEl.value = ''
+    gpEl.placeholder = raw.hasGmdAuthPass ? '已保存，留空保持不变' : '未配置（可选）'
+  }
   const box = document.getElementById('configSources')
   box.innerHTML = ''
   for (const s of ALL_SOURCES) {
@@ -115,8 +120,58 @@ export async function saveConfig() {
       gmdAuthPass,
     })
     showSnackbar('配置已保存')
+    // 保存后同步口令占位提示：填了新值 / 原本已保存都显示「留空保持不变」
+    const gpEl = document.getElementById('configGmdAuthPass')
+    if (gpEl) {
+      gpEl.value = ''
+      gpEl.placeholder =
+        gmdAuthPass || store.config.hasGmdAuthPass
+          ? '已保存，留空保持不变'
+          : '未配置（可选）'
+    }
     testConnection()
   } catch (e) {
     showSnackbar(friendlyError(e, '保存失败'))
+  }
+}
+
+/** 服务/凭据体检：只读展示，不做任何自动修复或上游写入。 */
+export async function runDiagnostics() {
+  const status = document.getElementById('diagnoseStatus')
+  const detail = document.getElementById('diagnoseDetail')
+  if (status) {
+    status.textContent = '正在检测…'
+    status.className = 'conn-status pending'
+  }
+  if (detail) detail.textContent = ''
+  try {
+    const r = await API.diagnostics()
+    if (status) {
+      status.textContent = r.ok ? '服务可达' : '不可达'
+      status.className = 'conn-status ' + (r.ok ? 'ok' : 'err')
+    }
+    if (detail) detail.textContent = r.message || ''
+  } catch (e) {
+    if (status) {
+      status.textContent = '检测失败'
+      status.className = 'conn-status err'
+    }
+    if (detail) detail.textContent = friendlyError(e, '体检失败')
+  }
+}
+
+/** 显式清除已保存的管理员密码（留空保存只表示「保持不变」）。 */
+export async function clearGmdAuthPass() {
+  try {
+    const res = await API.saveConfig({ clearGmdAuthPass: true })
+    store.config.hasGmdAuthPass = !!(res && res.config && res.config.hasGmdAuthPass)
+    const el = document.getElementById('configGmdAuthPass')
+    if (el) {
+      el.value = ''
+      el.placeholder = '未配置（可选）'
+    }
+    showSnackbar('已清除保存的管理员密码')
+  } catch (e) {
+    showSnackbar(friendlyError(e, '清除失败'))
   }
 }

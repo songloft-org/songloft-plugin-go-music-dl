@@ -22,7 +22,14 @@ import {
 import { testConnection, switchSource } from './api.js'
 import { applySwitchedSong } from './songlist.js'
 import { showSnackbar, hideSnackbar } from './util.js'
-import { loadConfig, saveConfig, setAllSources, autoFillServerHost } from './config.js'
+import {
+  loadConfig,
+  saveConfig,
+  setAllSources,
+  autoFillServerHost,
+  runDiagnostics,
+  clearGmdAuthPass,
+} from './config.js'
 import { initQrLogin } from './qrlogin.js'
 import {
   openSyncPanel,
@@ -213,6 +220,10 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   }
   document.getElementById('testConnBtn').onclick = testConnection
+  const diagBtn = document.getElementById('diagnoseBtn')
+  if (diagBtn) diagBtn.onclick = runDiagnostics
+  const clearPassBtn = document.getElementById('clearGmdAuthPassBtn')
+  if (clearPassBtn) clearPassBtn.onclick = clearGmdAuthPass
   // 全选 / 清空：切换勾选后立即保存，免去再点「保存配置」
   document.getElementById('selectAllSourcesBtn').onclick = () => { setAllSources(true); saveConfig() }
   document.getElementById('clearAllSourcesBtn').onclick = () => { setAllSources(false); saveConfig() }

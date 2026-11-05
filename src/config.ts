@@ -89,6 +89,16 @@ export function normalizeBaseUrl(raw: string, basePath?: string): string {
   return u
 }
 
+/**
+ * go-music-api 的 /api/v1/* 挂在服务根路径下（router/router.go 的 r.Group("/api/v1")），
+ * **不带** --base-path 的网页前缀；它的 /music/* 兼容组才是网页端点。
+ * 所以 api 模式请求必须用「根地址」，不能走 normalizeBaseUrl：否则会拼成
+ * /music/api/v1/... 而全部 404。gmd 模式及上游网页端点仍用 normalizeBaseUrl。
+ */
+export function rootBaseUrl(raw: string): string {
+  return (raw || '').trim().replace(/\/+$/, '')
+}
+
 /** 归一化对外可达地址：去首尾空白与结尾斜杠（不做 /music 补全，因为这是 Songloft 主机地址，不是 go-music-dl 后端地址）。 */
 export function normalizeServerHost(raw: string): string {
   return (raw || '').trim().replace(/\/+$/, '')

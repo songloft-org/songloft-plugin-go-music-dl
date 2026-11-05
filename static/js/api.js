@@ -17,6 +17,13 @@ export function normalizeBaseUrl(raw, basePath) {
   return u
 }
 
+// go-music-api 的 /api/v1/* 挂在服务根下，不带网页 Base Path 前缀。
+// api 模式下封面/探测等直连必须用根地址，否则会拼成 /music/api/v1/... 而 404。
+// 后端 src/config.ts 有同名同实现（两个运行时无法共享模块，改动需同步）。
+export function rootBaseUrl(raw) {
+  return (raw || '').trim().replace(/\/+$/, '')
+}
+
 // 判定 hostname 是否为内网（私有/回环）地址：用于「外网访问自动切换 go-music-dl 地址」
 export function isInternalHostname(h) {
   if (!h) return true
@@ -126,7 +133,7 @@ export function buildCoverUrl(raw) {
   if (!base) return raw
   if (raw.startsWith(base)) return raw // 已是本实例代理地址
   if (store.config.backendType === 'api') {
-    return `${base}/api/v1/music/cover?url=${encodeURIComponent(raw)}`
+    return `${rootBaseUrl(store.config.baseUrl)}/api/v1/music/cover?url=${encodeURIComponent(raw)}`
   }
   return `${base}/cover_proxy?url=${encodeURIComponent(raw)}`
 }
@@ -135,6 +142,7 @@ export const API = {
   config: () => fetchAuth('./config'),
   saveConfig: (cfg) =>
     fetchAuth('./config', { method: 'POST', body: JSON.stringify(cfg) }),
+  diagnostics: () => fetchAuth('./diagnostics'),
   search: (q, type, page = 1) =>
     fetchAuth(
       `./search?q=${encodeURIComponent(q)}${
@@ -405,7 +413,7 @@ export async function inspectSong(song) {
   if (song.source === 'netease') extra.level = effectiveQuality()
   const url =
     store.config.backendType === 'api'
-      ? `${base}/api/v1/music/inspect?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(song.source)}&duration=${song.duration || 0}`
+      ? `${rootBaseUrl(store.config.baseUrl)}/api/v1/music/inspect?id=${encodeURIComponent(song.id)}&source=${encodeURIComponent(song.source)}&duration=${song.duration || 0}`
       : (() => {
           const p = new URLSearchParams({
             id: song.id,

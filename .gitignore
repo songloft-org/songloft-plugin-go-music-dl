@@ -2,6 +2,8 @@ node_modules/
 dist/
 .DS_Store
 .agents
+# songloft-plugin dev 会写入含凭据的本地会话文件，严禁入库
+.songloft-dev.json
 
 # 单测转译产物
 tests/.gen/

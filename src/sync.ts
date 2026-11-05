@@ -387,6 +387,8 @@ interface SyncSession {
   dead: number
   startedAt: number
   updatedAt: number
+  /** step 并发锁：同一会话的请求必须串行，避免两个 step 读到同一 cursor 重复导入 */
+  busy: boolean
   result?: SyncOneResult
 }
 
@@ -505,6 +507,7 @@ export async function beginSyncSession(
     dead: 0,
     startedAt: Date.now(),
     updatedAt: Date.now(),
+    busy: false,
   }
   await fetchNextPage(session)
   sessions.set(session.id, session)
@@ -525,6 +528,10 @@ export async function stepSyncSession(
   if (s.phase === 'done') {
     return { done: true, sessionId: s.id, result: s.result }
   }
+  // 同一会话的 step 必须串行：多标签/网关重试并发时会读到同一 cursor，
+  // 重复处理同一批并重复累计进度。并发请求直接返回当前进度（幂等，不推进）。
+  if (s.busy) return stepView(s)
+  s.busy = true
   try {
     // 1) fetch 阶段：每步抓一页
     if (s.phase === 'fetch') {
@@ -589,5 +596,7 @@ export async function stepSyncSession(
     // 入库/加歌单失败（如宿主不可达）：本 chunk 作废（cursor 未推进），
     // 下次重试 diff 会重新补齐；已解析出本地歌单则落 partial 绑定，否则 failed。
     return await finishSession(s, s.localId ? 'partial' : 'failed', message)
+  } finally {
+    s.busy = false
   }
 }

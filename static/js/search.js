@@ -32,6 +32,18 @@ export async function doSearch(page = 1) {
     type = store.lastSearchType
   }
   if (!q) return
+  // 分享链接：上游把 q=http... 解析为单曲/歌单/专辑并返回歌曲卡片
+  // （go-music-dl internal/web/music.go 链接分支），统一按「单曲」请求与渲染，
+  // 避免分段按钮停在歌单/专辑时把歌曲结果渲染成卡片网格。
+  const isLink = /^https?:\/\//i.test(q)
+  if (page <= 1 && isLink) {
+    type = 'song'
+    store.currentSearchType = 'song'
+    store.lastSearchType = 'song'
+    document
+      .querySelectorAll('#searchTypeSwitch .mylist-cat')
+      .forEach((b) => b.classList.toggle('active', b.dataset.type === 'song'))
+  }
   const list = document.getElementById('browserList')
   list.innerHTML = '<div class="empty-state">搜索中...</div>'
   hideSearchPagination()
@@ -43,7 +55,10 @@ export async function doSearch(page = 1) {
     let items = Array.isArray(data) ? data : data && data.items ? data.items : []
     const pagination = Array.isArray(data) ? null : data && data.pagination
     if (!items.length) {
-      list.innerHTML = '<div class="empty-state">未找到结果</div>'
+      const msg = isLink
+        ? '链接解析失败：请确认是受支持的歌曲/歌单/专辑分享链接，或先在 go-music-dl 网页端试一次'
+        : '未找到结果'
+      list.innerHTML = `<div class="empty-state">${msg}</div>`
       return
     }
     if (type === 'song') {

@@ -9,8 +9,26 @@ import {
   buildDownloadUrl,
   buildInspectUrl,
   sortSongsByRelevance,
+  buildCoverProxyUrl,
 } from './.gen/client.mjs'
 import { encodeToken, decodeToken } from './.gen/contract.mjs'
+
+test('api 模式 /api/v1 端点挂在服务根，不带 --base-path 网页前缀', () => {
+  const song = { id: 'x', source: 'qq', duration: 1, extra: {} }
+  assert.equal(
+    buildInspectUrl(song, 'http://h:8080', '/music', true),
+    'http://h:8080/api/v1/music/inspect?id=x&source=qq&duration=1',
+  )
+  assert.equal(
+    buildCoverProxyUrl('http://cdn/a.jpg', 'http://h:8080', '/music', true),
+    'http://h:8080/api/v1/music/cover?url=http%3A%2F%2Fcdn%2Fa.jpg',
+  )
+  // gmd 模式仍按 basePath 拼网页端点
+  assert.match(
+    buildInspectUrl(song, 'http://h:8080', '/dl', false),
+    /^http:\/\/h:8080\/dl\/inspect/,
+  )
+})
 
 test('parseSongCards 解析 data-* 属性（含单引号 data-extra JSON）', () => {
   const html = `<ul>
@@ -95,10 +113,14 @@ test('encodeToken/decodeToken 往返（对象含中文与特殊字符）', () =>
   assert.deepEqual(decodeToken(tok), song)
 })
 
-test('parseTopListCards：从榜单卡片 href query 提取字段并去重', () => {
-  const card = (q) => `<a class="toplist-card" href="/music/toplist_songs?${q}"></a>`
+test('parseTopListCards：从榜单卡片 href query 提取字段、去重并读取播放量文本', () => {
+  const card = (q, body = '') =>
+    `<a class="toplist-card" href="/music/toplist_songs?${q}">${body}</a>`
+  const withPlay =
+    '<div class="toplist-sub"><span><i class="fa-solid fa-music"></i> 100 首</span>' +
+    '<span><i class="fa-solid fa-headphones"></i> 65.1亿</span></div>'
   const html = [
-    card('source=netease&amp;toplist_id=19723756&amp;toplist_name=%E9%A3%99%E5%8D%87%E6%A6%9C&amp;update_frequency=%E6%AF%8F%E6%97%A5%E6%9B%B4%E6%96%B0&amp;cover=http%3A%2F%2Fx%2F1.jpg&amp;track_count=100'),
+    card('source=netease&amp;toplist_id=19723756&amp;toplist_name=%E9%A3%99%E5%8D%87%E6%A6%9C&amp;update_frequency=%E6%AF%8F%E6%97%A5%E6%9B%B4%E6%96%B0&amp;cover=http%3A%2F%2Fx%2F1.jpg&amp;track_count=100', withPlay),
     card('source=netease&amp;toplist_id=19723756&amp;toplist_name=%E9%A3%99%E5%8D%87%E6%A6%9C'),
     card('source=qq&amp;toplist_id=26&amp;toplist_name=%E5%B3%B0%E5%B3%B0%E6%A6%9C'),
     card('source=qq&amp;toplist_id='),
@@ -112,6 +134,39 @@ test('parseTopListCards：从榜单卡片 href query 提取字段并去重', () 
   assert.equal(lists[0].updateFrequency, '每日更新')
   assert.equal(lists[0].cover, 'http://x/1.jpg')
   assert.equal(lists[0].trackCount, 100)
+  // [C] 只有带耳机图标 span 的卡片有播放量，且是上游已格式化的文本
+  assert.equal(lists[0].playCountText, '65.1亿')
   assert.equal(lists[1].source, 'qq')
   assert.equal(lists[1].toplistId, '26')
+  assert.equal(lists[1].playCountText, '')
+})
+
+test('parseSongCards 保留榜单名次 rank（供前端显示真实排名）', () => {
+  const html = `<ul><li class="song-card" data-id="1" data-source="qq" data-name="A"
+      data-artist="B" data-album="" data-cover="" data-duration="200"
+      data-extra='{"rank":7,"toplist_id":"26"}'></li></ul>`
+  const songs = parseSongCards(html)
+  assert.equal(songs.length, 1)
+  assert.equal(songs[0].extra.rank, 7)
+})
+
+test('parseTopListCards：description 含 &#43; 时不再吞掉 toplist_id', () => {
+  // 线上真实形态：Go html/template 把 URL 里的 `+` 转义成 &#43;，
+  // 未解码时残留的 # 会被 new URL 当成 fragment 起点，
+  // 其后的 &source=..&toplist_id=.. 全部丢失，卡片被误判为「无 ID」而丢弃。
+  const href =
+    '/music/toplist_songs?cover=http%3A%2F%2Fx%2Fc.jpg' +
+    '&amp;description=%E6%96%B0%E6%AD%8C%E6%A6%9C&#43;TOP' +
+    '&amp;source=netease&amp;toplist_id=3779629&amp;toplist_name=%E6%96%B0%E6%AD%8C%E6%A6%9C'
+  const card = (h) => `<a class="toplist-card" href="${h}"></a>`
+  const lists = parseTopListCards(card(href))
+  assert.equal(lists.length, 1)
+  assert.equal(lists[0].source, 'netease')
+  assert.equal(lists[0].toplistId, '3779629')
+  assert.equal(lists[0].name, '新歌榜')
+  // 十六进制实体同样要还原
+  assert.equal(
+    parseTopListCards(card(href.replace('&#43;', '&#x2B;')))[0].toplistId,
+    '3779629',
+  )
 })

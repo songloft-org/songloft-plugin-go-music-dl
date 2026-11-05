@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeBaseUrl, isInternalHostname, classifyError, friendlyError } from '../static/js/api.js'
+import { normalizeBaseUrl, rootBaseUrl, isInternalHostname, classifyError, friendlyError } from '../static/js/api.js'
+
+test('rootBaseUrl：api 模式只保留服务根地址，不追加网页前缀', () => {
+  assert.equal(rootBaseUrl('http://h:8080/'), 'http://h:8080')
+  assert.equal(rootBaseUrl('http://h:8080/music'), 'http://h:8080/music')
+  assert.equal(rootBaseUrl(''), '')
+})
 
 test('normalizeBaseUrl 按 basePath 拼接前缀且幂等', () => {
   // 默认 Base Path = /music（未传 basePath 时读 store.config.basePath 默认值）

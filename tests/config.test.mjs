@@ -8,7 +8,14 @@ import {
   DEFAULT_SOURCES,
   applyDefaultQuality,
   QUALITY_LEVELS,
+  rootBaseUrl,
 } from './.gen/config.mjs'
+
+test('rootBaseUrl：api 模式根地址不追加 Base Path', () => {
+  assert.equal(rootBaseUrl('http://h:8080/'), 'http://h:8080')
+  assert.equal(rootBaseUrl('  http://h:8080/music/  '), 'http://h:8080/music')
+  assert.equal(rootBaseUrl(''), '')
+})
 
 test('normalizeConfig：地址根化收口、basePath 默认/归一（save 后缓存与落盘一致）', () => {
   const c = normalizeConfig({ baseUrl: 'http://192.168.1.190:8080' })

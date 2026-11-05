@@ -19,22 +19,31 @@ function b64decode(s: string): string {
   return decodeURIComponent(escape(atobFn(s)))
 }
 
+/** 字符串 → URL 安全 base64url（无填充）。 */
+export function encodeBase64Url(s: string): string {
+  return b64encode(s)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
+}
+
+/** URL 安全 base64url → 字符串。 */
+export function decodeBase64Url(s: string): string {
+  return b64decode(s.replace(/-/g, '+').replace(/_/g, '/'))
+}
+
 /**
  * 把任意对象/字符串编码为 URL 安全的 base64url token（无填充）。
  * 与历史 Bridge contract 的 encodeToken 算法一致，便于已分发的旧 token 仍可解码。
  */
 export function encodeToken(obj: unknown): string {
   const json = typeof obj === 'string' ? obj : JSON.stringify(obj)
-  return b64encode(json)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
+  return encodeBase64Url(json)
 }
 
 /** 解码 base64url token，还原为原始对象。 */
 export function decodeToken<T = unknown>(tok: string): T {
-  const b64 = tok.replace(/-/g, '+').replace(/_/g, '/')
-  return JSON.parse(b64decode(b64))
+  return JSON.parse(decodeBase64Url(tok))
 }
 
 /**

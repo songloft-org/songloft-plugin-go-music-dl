@@ -85,6 +85,8 @@
         .playlist-cover { position: relative; width: 100%; aspect-ratio: 1 / 1; background: var(--md-surface-variant, #eee); overflow: hidden; }
         .playlist-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
         .playlist-source-tag { position: absolute; top: 6px; right: 6px; font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); }
+        /* [C] 榜单播放量角标（左下，与右上更新频率角标错开）；移除 C 时删此行 */
+        .playlist-play-tag { position: absolute; bottom: 6px; left: 6px; font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; background: rgba(0,0,0,.62); color: #fff; -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px); white-space: nowrap; }
         .playlist-meta { padding: 8px 10px 10px; min-width: 0; }
         .playlist-title { font-size: 13px; font-weight: 600; color: var(--md-on-surface, #1f1f1f); display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
         .playlist-sub { font-size: 11px; color: var(--md-on-surface-variant, #666); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -201,7 +203,7 @@
             <div class="card">
                 <div class="card-body" style="display:flex;flex-direction:column;gap:12px;">
                     <div style="display:flex;gap:8px;align-items:center;">
-                        <input type="text" class="text-field" id="searchInput" placeholder="搜索歌手、歌曲..." style="flex:1">
+                        <input type="text" class="text-field" id="searchInput" placeholder="搜索歌手、歌曲，或粘贴歌曲/歌单分享链接" style="flex:1">
                         <button class="btn-filled" id="searchBtn" style="padding:0 16px;">搜索</button>
                     </div>
                     <div class="mylist-cats" id="searchTypeSwitch" style="padding:0;">
@@ -363,6 +365,11 @@
                                 <button class="btn-text" id="testConnBtn" type="button">测试连接</button>
                                 <span class="conn-status" id="connStatus"></span>
                             </div>
+                            <div class="conn-row">
+                                <button class="btn-text" id="diagnoseBtn" type="button">服务与凭据体检</button>
+                                <span class="conn-status" id="diagnoseStatus"></span>
+                            </div>
+                            <div class="card-desc" id="diagnoseDetail" style="padding:0;margin-top:4px;">只读检测：服务可达性、各平台 Cookie 配置情况；不会修改上游设置。</div>
                             <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
                                 <button class="btn-filled save-config-btn">保存配置</button>
                             </div>
@@ -422,6 +429,9 @@
                             <input type="text" class="text-field" id="configGmdAuthUser" placeholder="go-music-dl 管理员用户名" autocomplete="off">
                             <div style="font-size:13px;color:#b9b9b9;margin:16px 0 6px;">密码</div>
                             <input type="password" class="text-field" id="configGmdAuthPass" placeholder="go-music-dl 管理员密码" autocomplete="new-password">
+                            <div style="margin-top:8px;">
+                                <button class="btn-text" id="clearGmdAuthPassBtn" type="button">清除已保存密码</button>
+                            </div>
                         </div>
                         <div class="toolbar" style="padding:12px 0 0;justify-content:flex-end;gap:8px; background:transparent; border-bottom:none;">
                             <button class="btn-filled save-config-btn">保存配置</button>

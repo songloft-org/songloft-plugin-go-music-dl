@@ -416,14 +416,25 @@ function renderToplistRow(t) {
   const card = document.createElement('div')
   card.className = 'playlist-card'
   const cover = buildCoverUrl(t.cover) || FALLBACK_COVER
+  const desc = String(t.description || '').trim()
+  const shortDesc = desc.length > 48 ? desc.slice(0, 48) + '…' : desc
+  // [C] 播放量做成封面左下角标：.playlist-sub 是单行 ellipsis（index.html），
+  // 拼在「来源 · N 首」后面会被 120px 宽的卡片直接裁掉，视觉上等于没实现。
+  // title 标明口径，避免误读为实时播放统计。
+  // 决定移除 C 时：删 playText、封面里的 ${playText} 插值、index.html 的 .playlist-play-tag 样式。
+  const playText = t.playCountText
+    ? `<span class="playlist-play-tag" title="平台累计收听量 · 约 10 分钟更新 · 非本插件播放统计">播放量 ${escapeHtml(t.playCountText)}</span>`
+    : ''
   card.innerHTML = `
     <div class="playlist-cover">
       <img src="${escapeHtml(cover)}" loading="lazy" referrerpolicy="no-referrer">
       ${t.updateFrequency ? `<span class="playlist-source-tag">${escapeHtml(t.updateFrequency)}</span>` : ''}
+      ${playText}
     </div>
     <div class="playlist-meta">
       <div class="playlist-title">${escapeHtml(t.name)}</div>
       <div class="playlist-sub">${escapeHtml(sourceLabel(t.source) || t.source)}${t.trackCount ? ` · ${t.trackCount} 首` : ''}</div>
+      ${shortDesc ? `<div class="playlist-sub" style="font-size:12px;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(desc)}">${escapeHtml(shortDesc)}</div>` : ''}
     </div>`
   card.onclick = () => openToplist(t)
   return card

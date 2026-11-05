@@ -10,7 +10,7 @@
 // 支持源（core/service.go GetQRLoginCreateFunc）：netease/qq/qq_wx/kugou/bilibili/soda；
 // soda 走短信验证分支（上游 Web 端也临时隐藏入口），本插件不接入。
 
-import { normalizeBaseUrl, GoMusicDlConfig, isApiBackend } from './config'
+import { normalizeBaseUrl, rootBaseUrl, GoMusicDlConfig, isApiBackend } from './config'
 import { getGmdCookieHeader, clearCachedSession } from './gmd-auth'
 
 export interface QRSourceInfo {
@@ -77,7 +77,9 @@ async function requestJson(
       )
     }
     if (res.status === 404) {
-      throw new Error('接口不存在 (404)：请确认服务地址与 Base Path 配置正确')
+      throw new Error(
+        '扫码接口不存在 (404)：请检查服务地址、Base Path 与「后端类型」是否匹配',
+      )
     }
     throw new Error(detail || `go-music-dl 请求失败: HTTP ${res.status}`)
   }
@@ -153,7 +155,7 @@ export async function qrStart(
   if (isApiBackend(config)) {
     // go-music-api 无登录鉴权，端点在 /api/v1/system 下，返回 {code,msg,data:session}
     const text = await requestJsonRaw(
-      `${base}/api/v1/system/qr_login/${encodeURIComponent(source)}`,
+      `${rootBaseUrl(config.baseUrl)}/api/v1/system/qr_login/${encodeURIComponent(source)}`,
       'POST',
       timeoutMs,
     )
@@ -189,7 +191,7 @@ export async function qrPoll(
   let data: any
   if (isApiBackend(config)) {
     const text = await requestJsonRaw(
-      `${base}/api/v1/system/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`,
+      `${rootBaseUrl(config.baseUrl)}/api/v1/system/qr_login/${encodeURIComponent(source)}?key=${encodeURIComponent(key)}`,
       'GET',
       timeoutMs,
     )

@@ -6,7 +6,7 @@ import {
   FALLBACK_COVER,
   MAX_SWITCH_ROUNDS,
 } from './state.js'
-import { escapeHtml, formatBitrateBadge, setSongBitrate } from './util.js'
+import { escapeHtml, fmtTime, formatBitrateBadge, setSongBitrate } from './util.js'
 import { switchSource, buildCoverUrl, inspectSong } from './api.js'
 import { playSong } from './player.js'
 import { toggleSelect, openImportPanel } from './imports.js'
@@ -144,9 +144,16 @@ export function renderSong(s, index, opts = {}) {
   card.className = 'song-row'
   cardData.set(card, { song: s, index })
   const cover = buildCoverUrl(s.cover) || FALLBACK_COVER
-  // 排序序号：默认按页内位置从 1 开始；翻页场景由调用方传入 startIndex（= 当前页 pageStart），
-  // 使序号跨页连续（如第 2 页从 31 起），与 page-summary「显示 x - y / total」对齐。
-  const number = (opts.startIndex && opts.startIndex > 0 ? opts.startIndex : 1) + index
+  // 排序序号：榜单歌曲的 extra.rank 是平台真实名次（music-lib 各源 toplist.go 写入），
+  // 优先显示它；其余列表按页内位置从 1 开始，翻页时由 startIndex 保证跨页连续。
+  let extra = s.extra
+  if (typeof extra === 'string') {
+    try { extra = JSON.parse(extra) } catch { extra = null }
+  }
+  const rank = Number(extra && extra.rank)
+  const number = Number.isFinite(rank) && rank > 0
+    ? rank
+    : (opts.startIndex && opts.startIndex > 0 ? opts.startIndex : 1) + index
   const key = songKey(s)
   // 已下载匹配键：挂到行元素上，scheduleInspect → markListDownloaded 补挂徽标用
   card.__dlKey = downloadedKey(s)
@@ -168,7 +175,7 @@ export function renderSong(s, index, opts = {}) {
     <img src="${escapeHtml(cover)}" class="song-cover" referrerpolicy="no-referrer" onerror="this.src='${FALLBACK_COVER}'">
     <div class="song-meta">
       <div class="song-title">${escapeHtml(s.name)}</div>
-      <div class="song-sub">${escapeHtml(s.artist)} · ${escapeHtml(s.album || '')} · ${escapeHtml(sourceLabel(s.source))}</div>
+      <div class="song-sub">${escapeHtml(s.artist)} · ${escapeHtml(s.album || '')} · ${escapeHtml(sourceLabel(s.source))}${Number(s.duration) > 0 ? ` · ${fmtTime(s.duration)}` : ''}</div>
       <div class="song-tags">
         <span class="song-status status-pending">待检测</span>
         <span class="song-bitrate" style="display:none;"></span>

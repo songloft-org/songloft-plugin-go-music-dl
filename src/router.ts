@@ -32,9 +32,11 @@ import {
   collapseKaraokeToLines,
   karaokeToLxLyric,
 } from './lyrics-format'
-import { encodeToken, decodeToken, loopbackToLan } from './bridge-contract'
+import { loopbackToLan } from './bridge-contract'
+import { encodeStreamToken, decodeStreamToken, StreamTokenError } from './stream-token'
 import { toGoSong } from './client'
 import { callHostApi } from './host'
+import { diagnose } from './diagnostics'
 import { QR_SOURCES, qrStart, qrPoll } from './qrlogin'
 import { clearCachedSession } from './gmd-auth'
 import type { QRSession } from './qrlogin'
@@ -166,17 +168,31 @@ interface DownloadRequest {
 
 const router = createRouter()
 
+/** 对外配置视图：管理员口令不回显，只告知是否已配置。 */
+function publicConfig(config: GoMusicDlConfig): Record<string, unknown> {
+  const { gmdAuthPass, ...rest } = config
+  return { ...rest, gmdAuthPass: '', hasGmdAuthPass: !!gmdAuthPass }
+}
+
 // 获取配置
 router.get('/config', async () => {
   const config = await getConfig()
-  return jsonResponse(config)
+  return jsonResponse(publicConfig(config))
 })
 
 // 保存配置
 router.post('/config', async (req: HTTPRequest) => {
-  const data = parseBody(req) as Partial<GoMusicDlConfig>
+  const data = parseBody(req) as Partial<GoMusicDlConfig> & {
+    clearGmdAuthPass?: boolean
+  }
   const config = await getConfig()
-  const newConfig = { ...config, ...data }
+  // 前端不回填已保存口令：空串表示「保持不变」，填新值才覆盖；
+  // clearGmdAuthPass 是「清除」按钮的显式意图。该标志是一次性指令，不能落盘。
+  const { clearGmdAuthPass, ...cleanData } = data
+  const patch: Partial<GoMusicDlConfig> = { ...cleanData }
+  if (clearGmdAuthPass === true) patch.gmdAuthPass = ''
+  else if (patch.gmdAuthPass === '') patch.gmdAuthPass = config.gmdAuthPass || ''
+  const newConfig = { ...config, ...patch }
   await saveConfig(newConfig)
   // 配置变化（地址/音源/音质/凭据）会使已缓存结果的输入失效，全部清空；
   // gmd session 缓存一并失效（凭据可能已更换，避免沿用旧会话）
@@ -184,7 +200,17 @@ router.post('/config', async (req: HTTPRequest) => {
   await clearCachedSession()
   // 与 saveConfig 落盘的归一化结果保持一致（地址根化、枚举白名单、旧数据迁移），
   // 否则 UI 显示值与下次启动读到的配置会分叉。
-  return jsonResponse({ success: true, config: normalizeConfig(newConfig) })
+  return jsonResponse({
+    success: true,
+    config: publicConfig(normalizeConfig(newConfig)),
+  })
+})
+
+// 服务/凭据体检（只读）：供设置页展示可达性与各平台 Cookie 配置情况。
+// 不做自动修复、不写上游状态；结果不缓存，点一次查一次。
+router.get('/diagnostics', async () => {
+  const config = await getConfig()
+  return jsonResponse(await diagnose(config))
 })
 
 // 全局搜索（Songloft 主程序调用）。
@@ -288,7 +314,12 @@ function buildStreamUrl(base: string, token: string): string {
 async function makeDirectStreamUrl(song: GoSong): Promise<string | null> {
   try {
     const config = await getConfig()
-    const token = encodeToken(song)
+    const token = await encodeStreamToken(song)
+    if (!token) {
+      // 密钥不可用：拒绝签发可伪造的直链，走入库播放回退
+      console.log('[stream] token signing unavailable, skip direct url')
+      return null
+    }
 
     // 1) 显式配置的对外可达地址（最高优先）
     if (config.serverHost) {
@@ -374,9 +405,11 @@ router.get('/stream/:token', async (req: HTTPRequest, params: any) => {
   if (!tok) return jsonResponse({ error: 'missing token' }, 400)
   let song: GoSong
   try {
-    song = decodeToken<GoSong>(tok)
-  } catch {
-    return jsonResponse({ error: 'invalid token' }, 400)
+    // 免鉴权端点：必须校验签名与有效期，历史无签名 token 一律拒绝
+    song = await decodeStreamToken<GoSong>(tok)
+  } catch (e) {
+    const msg = e instanceof StreamTokenError ? e.message : 'invalid token'
+    return jsonResponse({ error: msg }, 400)
   }
   if (!song?.id || !song?.source) {
     return jsonResponse({ error: 'invalid stream token' }, 400)
